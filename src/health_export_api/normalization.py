@@ -189,6 +189,12 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
             if name == "sleep_analysis" and isinstance(raw_samples, list):
                 # Sleep samples carry per-stage fields rather than a single qty/value.
                 # Expand into: sleep_analysis (totalSleep) + per-stage sub-metrics.
+                #
+                # Apple Watch sometimes emits overlapping sub-records for a single
+                # night — e.g. the full session plus 4 shorter stage-transition
+                # fragments that all share the same sleepEnd. De-duplicate by keeping
+                # only the record with the earliest sleepStart per unique sleepEnd
+                # (i.e. the outermost / longest record for each session).
                 _SLEEP_FIELDS = {
                     "sleep_analysis": "totalSleep",
                     "sleep_analysis_deep": "deep",
@@ -196,10 +202,25 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
                     "sleep_analysis_rem": "rem",
                     "sleep_analysis_awake": "awake",
                 }
-                sub: dict[str, list[MetricSample]] = {k: [] for k in _SLEEP_FIELDS}
+                # First pass: deduplicate by sleepEnd, keeping earliest sleepStart.
+                best: dict[str, Any] = {}  # sleepEnd_str -> raw_sample
                 for raw_sample in raw_samples:
                     if not isinstance(raw_sample, Mapping):
                         continue
+                    sleep_end = raw_sample.get("sleepEnd") or raw_sample.get("inBedEnd")
+                    if not isinstance(sleep_end, str):
+                        continue
+                    sleep_start_str = raw_sample.get("sleepStart") or raw_sample.get("inBedStart") or ""
+                    existing = best.get(sleep_end)
+                    if existing is None:
+                        best[sleep_end] = raw_sample
+                    else:
+                        existing_start = existing.get("sleepStart") or existing.get("inBedStart") or ""
+                        if sleep_start_str < existing_start:
+                            best[sleep_end] = raw_sample
+                # Second pass: emit MetricSamples from deduplicated records.
+                sub: dict[str, list[MetricSample]] = {k: [] for k in _SLEEP_FIELDS}
+                for raw_sample in best.values():
                     raw_date = (
                         raw_sample.get("date")
                         or raw_sample.get("sleepStart")
