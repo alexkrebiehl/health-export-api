@@ -1,18 +1,22 @@
 import json
 import os
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, status
+
+from health_export_api.normalization import available_metrics, resolve_date_range, summarize_metric
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def create_app(storage_dir: Path, api_token: str) -> FastAPI:
+def create_app(
+    storage_dir: Path, api_token: str, summary_today: date | None = None
+) -> FastAPI:
     if not api_token:
         raise ValueError("api_token must not be empty")
 
@@ -59,6 +63,40 @@ def create_app(storage_dir: Path, api_token: str) -> FastAPI:
     ) -> dict[str, list[dict[str, Any]]]:
         authorize(authorization)
         return {"exports": load_exports()[:limit]}
+
+    @app.get("/v1/metrics")
+    def list_metrics(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, list[dict[str, str | None]]]:
+        authorize(authorization)
+        return {"metrics": available_metrics(load_exports())}
+
+    @app.get("/v1/summary")
+    def get_summary(
+        metric: str,
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        granularity: str = Query(default="day", pattern="^(day|month)$"),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            range_start, range_end = resolve_date_range(
+                date_range=date_range,
+                start_date=start_date,
+                end_date=end_date,
+                today=summary_today or date.today(),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+        return summarize_metric(
+            load_exports(),
+            metric=metric,
+            start_date=range_start,
+            end_date=range_end,
+            granularity=granularity,
+        )
 
     @app.get("/v1/exports/latest")
     def get_latest_export(

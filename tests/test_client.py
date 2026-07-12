@@ -42,3 +42,24 @@ def test_client_passes_limit_when_listing_exports() -> None:
     )
 
     assert client.list_exports(limit=3) == []
+
+
+def test_client_requests_metric_summary_with_range_and_granularity() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/summary"
+        assert dict(request.url.params) == {
+            "metric": "step_count",
+            "date_range": "last 3 days",
+            "granularity": "day",
+        }
+        return httpx.Response(200, json={"metric": "step_count", "series": []})
+
+    client = HealthExportClient(
+        base_url="https://health.example.test",
+        api_token="secret-token",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.get_metric_summary(
+        metric="step_count", date_range="last 3 days", granularity="day"
+    ) == {"metric": "step_count", "series": []}
