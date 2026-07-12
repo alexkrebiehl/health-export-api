@@ -1,0 +1,12 @@
+services:
+  health-export-api:
+    build: .
+    ports:
+      - "8000:8000"
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      HEALTH_EXPORT_API_TOKEN: ${HEALTH_EXPORT_API_TOKEN:?set this in .env}
+      HEALTH_EXPORT_STORAGE_DIR: /data/exports
+    volumes:
+      - ./storage:/data/exports
+    restart: unless-stopped

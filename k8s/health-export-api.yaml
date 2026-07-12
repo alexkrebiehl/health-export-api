@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: health-export-api-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-export-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: health-export-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: health-export-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: api
+          image: ghcr.io/REPLACE_ME/health-export-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: HEALTH_EXPORT_STORAGE_DIR
+              value: /data/exports
+            - name: HEALTH_EXPORT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: health-export-api
+                  key: api-token
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: health-export-api-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-export-api
+spec:
+  selector:
+    app.kubernetes.io/name: health-export-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
