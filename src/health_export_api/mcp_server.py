@@ -7,7 +7,7 @@ from health_export_api.client import HealthExportClient
 
 
 class ExportQueryClient(Protocol):
-    def get_latest_export(self) -> dict[str, Any]: ...
+    def list_exports(self, limit: int) -> list[dict[str, Any]]: ...
 
     def list_metrics(self) -> list[dict[str, str | None]]: ...
 
@@ -21,15 +21,13 @@ class ExportQueryClient(Protocol):
         end_date: str | None,
     ) -> dict[str, Any]: ...
 
-    def list_exports(self, limit: int) -> list[dict[str, Any]]: ...
-
 
 def create_mcp_server(client: ExportQueryClient) -> FastMCP:
     server = FastMCP("Health Export API")
 
     @server.tool()
     def list_metrics() -> list[dict[str, str | None]]:
-        """List all metric names and units available across stored exports."""
+        """List all health metric names and units available across stored exports."""
         return client.list_metrics()
 
     @server.tool()
@@ -40,7 +38,7 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> dict[str, Any]:
-        """Summarize a Health metric across a flexible date range.
+        """Summarize a health metric across a flexible date range.
 
         metric: metric name (e.g. "step_count", "weight_body_mass")
         granularity: "day" or "month"
@@ -55,11 +53,6 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
             start_date=start_date,
             end_date=end_date,
         )
-
-    @server.tool()
-    def get_latest_export() -> dict[str, Any]:
-        """Return the most recently received Apple Health export."""
-        return client.get_latest_export()
 
     @server.tool()
     def list_exports(limit: int = 20) -> list[dict[str, Any]]:
