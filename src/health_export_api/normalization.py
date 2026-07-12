@@ -185,14 +185,55 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
             unit = raw_metric.get("units") or raw_metric.get("unit")
             if unit is not None and not isinstance(unit, str):
                 unit = str(unit)
-            samples: list[MetricSample] = []
             raw_samples = raw_metric.get("data")
-            if isinstance(raw_samples, list):
+            if name == "sleep_analysis" and isinstance(raw_samples, list):
+                # Sleep samples carry per-stage fields rather than a single qty/value.
+                # Expand into: sleep_analysis (totalSleep) + per-stage sub-metrics.
+                _SLEEP_FIELDS = {
+                    "sleep_analysis": "totalSleep",
+                    "sleep_analysis_deep": "deep",
+                    "sleep_analysis_core": "core",
+                    "sleep_analysis_rem": "rem",
+                    "sleep_analysis_awake": "awake",
+                }
+                sub: dict[str, list[MetricSample]] = {k: [] for k in _SLEEP_FIELDS}
                 for raw_sample in raw_samples:
-                    sample = _parse_sample(name, unit, raw_sample)
-                    if sample:
-                        samples.append(sample)
-            yield {"name": name, "unit": unit, "samples": samples}
+                    if not isinstance(raw_sample, Mapping):
+                        continue
+                    raw_date = (
+                        raw_sample.get("date")
+                        or raw_sample.get("sleepStart")
+                        or raw_sample.get("startDate")
+                    )
+                    if not isinstance(raw_date, str):
+                        continue
+                    timestamp = _parse_timestamp(raw_date)
+                    if timestamp is None:
+                        continue
+                    src = raw_sample.get("source")
+                    source = src if isinstance(src, str) else None
+                    for sub_metric, field in _SLEEP_FIELDS.items():
+                        raw_value = raw_sample.get(field)
+                        if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+                            sub[sub_metric].append(
+                                MetricSample(
+                                    metric=sub_metric,
+                                    unit=unit,
+                                    timestamp=timestamp,
+                                    value=float(raw_value),
+                                    source=source,
+                                )
+                            )
+                for sub_metric, samples in sub.items():
+                    yield {"name": sub_metric, "unit": unit, "samples": samples}
+            else:
+                samples: list[MetricSample] = []
+                if isinstance(raw_samples, list):
+                    for raw_sample in raw_samples:
+                        sample = _parse_sample(name, unit, raw_sample)
+                        if sample:
+                            samples.append(sample)
+                yield {"name": name, "unit": unit, "samples": samples}
         return
 
 
