@@ -13,16 +13,26 @@ class HealthExportClient:
         self._http_client = http_client or httpx.Client(timeout=30.0)
         self._headers = {"Authorization": f"Bearer {api_token}"}
 
-    def get_latest_export(self) -> dict[str, Any]:
+    # -------------------------------------------------------------------------
+    # Ingestion
+    # -------------------------------------------------------------------------
+
+    def list_exports(self, limit: int = 20) -> list[dict[str, Any]]:
         response = self._http_client.get(
-            f"{self._base_url}/v1/exports/latest", headers=self._headers
+            f"{self._base_url}/v1/exports",
+            headers=self._headers,
+            params={"limit": limit},
         )
         response.raise_for_status()
-        return response.json()
+        return response.json()["exports"]
+
+    # -------------------------------------------------------------------------
+    # Health metrics — /v1/health/
+    # -------------------------------------------------------------------------
 
     def list_metrics(self) -> list[dict[str, str | None]]:
         response = self._http_client.get(
-            f"{self._base_url}/v1/metrics", headers=self._headers
+            f"{self._base_url}/v1/health/metrics", headers=self._headers
         )
         response.raise_for_status()
         return response.json()["metrics"]
@@ -44,16 +54,7 @@ class HealthExportClient:
         if end_date:
             params["end_date"] = end_date
         response = self._http_client.get(
-            f"{self._base_url}/v1/summary", headers=self._headers, params=params
+            f"{self._base_url}/v1/health/summary", headers=self._headers, params=params
         )
         response.raise_for_status()
         return response.json()
-
-    def list_exports(self, limit: int = 20) -> list[dict[str, Any]]:
-        response = self._http_client.get(
-            f"{self._base_url}/v1/exports",
-            headers=self._headers,
-            params={"limit": limit},
-        )
-        response.raise_for_status()
-        return response.json()["exports"]

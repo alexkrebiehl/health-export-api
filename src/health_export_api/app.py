@@ -21,7 +21,7 @@ def create_app(
         raise ValueError("api_token must not be empty")
 
     storage_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="Health Export API", version="0.2.0")
+    app = FastAPI(title="Health Export API", version="0.3.0")
 
     def authorize(authorization: str | None) -> None:
         if authorization != f"Bearer {api_token}":
@@ -31,9 +31,17 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    # -------------------------------------------------------------------------
+    # Health check
+    # -------------------------------------------------------------------------
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    # -------------------------------------------------------------------------
+    # Ingestion — shared by all export types (health metrics, workouts, etc.)
+    # -------------------------------------------------------------------------
 
     @app.post("/v1/exports", status_code=status.HTTP_201_CREATED)
     async def create_export(
@@ -45,8 +53,6 @@ def create_app(
         destination = storage_dir / f"{export_id}.json"
         temporary = destination.with_suffix(".json.tmp")
         # Stream body directly to disk — never buffer the full payload in RAM.
-        # The stored file is a valid JSON envelope:
-        #   {"id":"...","received_at":"...","payload":<raw_body>}
         with temporary.open("wb") as fh:
             prefix = (
                 f'{{"id":{json.dumps(export_id)},'
@@ -60,21 +66,26 @@ def create_app(
         temporary.replace(destination)
         return {"id": export_id, "received_at": received_at}
 
-    def load_exports() -> list[dict[str, Any]]:
-        records = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in storage_dir.glob("*.json")
-        ]
-        return sorted(records, key=lambda record: record["received_at"], reverse=True)
+    @app.get("/v1/exports")
+    def list_exports(
+        limit: int = Query(default=20, ge=1, le=100),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, list[dict[str, Any]]]:
+        authorize(authorization)
+        return {"exports": _load_exports()[:limit]}
 
-    @app.get("/v1/metrics")
+    # -------------------------------------------------------------------------
+    # Health metrics — /v1/health/
+    # -------------------------------------------------------------------------
+
+    @app.get("/v1/health/metrics")
     def list_metrics(
         authorization: str | None = Header(default=None),
     ) -> dict[str, list[dict[str, str | None]]]:
         authorize(authorization)
-        return {"metrics": available_metrics(load_exports())}
+        return {"metrics": available_metrics(_load_exports())}
 
-    @app.get("/v1/summary")
+    @app.get("/v1/health/summary")
     def get_summary(
         metric: str,
         date_range: str | None = Query(default=None),
@@ -96,30 +107,23 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
             )
         return summarize_metric(
-            load_exports(),
+            _load_exports(),
             metric=metric,
             start_date=range_start,
             end_date=range_end,
             granularity=granularity,
         )
 
-    @app.get("/v1/exports")
-    def list_exports(
-        limit: int = Query(default=20, ge=1, le=100),
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, list[dict[str, Any]]]:
-        authorize(authorization)
-        return {"exports": load_exports()[:limit]}
+    # -------------------------------------------------------------------------
+    # Internal helpers
+    # -------------------------------------------------------------------------
 
-    @app.get("/v1/exports/latest")
-    def get_latest_export(
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        authorize(authorization)
-        records = load_exports()
-        if not records:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No exports found")
-        return records[0]
+    def _load_exports() -> list[dict[str, Any]]:
+        records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in storage_dir.glob("*.json")
+        ]
+        return sorted(records, key=lambda r: r["received_at"], reverse=True)
 
     return app
 

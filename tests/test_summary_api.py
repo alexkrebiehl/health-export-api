@@ -39,7 +39,7 @@ def test_daily_summary_parses_last_n_days_and_deduplicates_reexported_samples(
     assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
 
     response = client.get(
-        "/v1/summary",
+        "/v1/health/summary",
         headers=headers,
         params={
             "metric": "step_count",
@@ -87,7 +87,7 @@ def test_month_summary_supports_named_date_ranges_and_averages_measurements(
     assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
 
     response = client.get(
-        "/v1/summary",
+        "/v1/health/summary",
         headers=headers,
         params={
             "metric": "weight_body_mass",
@@ -125,9 +125,9 @@ def test_metric_catalog_and_missing_metrics_handle_export_schema_changes(tmp_pat
     }
     assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
 
-    catalog = client.get("/v1/metrics", headers=headers)
+    catalog = client.get("/v1/health/metrics", headers=headers)
     missing = client.get(
-        "/v1/summary",
+        "/v1/health/summary",
         headers=headers,
         params={
             "metric": "removed_metric",

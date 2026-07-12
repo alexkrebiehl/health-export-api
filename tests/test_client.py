@@ -3,19 +3,12 @@ import httpx
 from health_export_api.client import HealthExportClient
 
 
-def test_client_calls_latest_endpoint_with_bearer_token() -> None:
+def test_client_calls_list_exports_endpoint_with_bearer_token() -> None:
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "id": "export-1",
-                "received_at": "2026-07-13T02:30:00Z",
-                "payload": {"data": {"steps": 8432}},
-            },
-        )
+        return httpx.Response(200, json={"exports": [{"id": "export-1"}]})
 
     client = HealthExportClient(
         base_url="https://health.example.test",
@@ -23,10 +16,10 @@ def test_client_calls_latest_endpoint_with_bearer_token() -> None:
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    result = client.get_latest_export()
+    result = client.list_exports(limit=1)
 
-    assert result["id"] == "export-1"
-    assert captured[0].url.path == "/v1/exports/latest"
+    assert result == [{"id": "export-1"}]
+    assert captured[0].url.path == "/v1/exports"
     assert captured[0].headers["authorization"] == "Bearer secret-token"
 
 
@@ -46,7 +39,7 @@ def test_client_passes_limit_when_listing_exports() -> None:
 
 def test_client_requests_metric_summary_with_range_and_granularity() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/summary"
+        assert request.url.path == "/v1/health/summary"
         assert dict(request.url.params) == {
             "metric": "step_count",
             "date_range": "last 3 days",
@@ -63,3 +56,17 @@ def test_client_requests_metric_summary_with_range_and_granularity() -> None:
     assert client.get_metric_summary(
         metric="step_count", date_range="last 3 days", granularity="day"
     ) == {"metric": "step_count", "series": []}
+
+
+def test_client_requests_health_metrics_catalog() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/health/metrics"
+        return httpx.Response(200, json={"metrics": [{"metric": "step_count", "unit": "count"}]})
+
+    client = HealthExportClient(
+        base_url="https://health.example.test",
+        api_token="secret-token",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.list_metrics() == [{"metric": "step_count", "unit": "count"}]

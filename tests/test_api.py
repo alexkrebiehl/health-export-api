@@ -32,13 +32,6 @@ def test_posted_export_is_persisted_and_can_be_retrieved(tmp_path: Path) -> None
     stored = json.loads((tmp_path / f"{created['id']}.json").read_text())
     assert stored["payload"] == payload
 
-    latest = client.get(
-        "/v1/exports/latest", headers={"Authorization": "Bearer test-token"}
-    )
-    assert latest.status_code == 200
-    assert latest.json()["id"] == created["id"]
-    assert latest.json()["payload"] == payload
-
 
 def test_array_exports_are_preserved_without_schema_assumptions(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -69,13 +62,12 @@ def test_export_endpoints_require_a_matching_bearer_token(tmp_path: Path) -> Non
     )
 
 
-def test_latest_returns_404_when_no_export_has_been_received(tmp_path: Path) -> None:
+def test_exports_latest_is_removed(tmp_path: Path) -> None:
     client = make_client(tmp_path)
-
     response = client.get(
         "/v1/exports/latest", headers={"Authorization": "Bearer test-token"}
     )
-    assert response.status_code == 404
+    assert response.status_code == 404  # endpoint gone, FastAPI returns 404
 
 
 def test_large_export_is_streamed_to_disk_without_loading_into_memory(
@@ -88,7 +80,6 @@ def test_large_export_is_streamed_to_disk_without_loading_into_memory(
         "Authorization": "Bearer test-token",
         "Content-Type": "application/json",
     }
-    # 4 MB synthetic payload — large enough to be meaningful, fast to generate
     big_metrics = [{"name": f"metric_{i}", "units": "count", "data": [{"date": "2026-01-01 08:00:00 -0500", "qty": i}]} for i in range(5000)]
     big_payload = {"data": {"metrics": big_metrics}}
 
