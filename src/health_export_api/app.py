@@ -7,8 +7,8 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 
-from health_export_api.normalization import available_metrics, resolve_date_range, summarize_metric
-from health_export_api.workout_normalization import available_workout_types, summarize_workouts
+from health_export_api.normalization import resolve_date_range
+from health_export_api.store import Store
 
 
 def _utc_now() -> str:
@@ -22,7 +22,11 @@ def create_app(
         raise ValueError("api_token must not be empty")
 
     storage_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="Health Export API", version="0.3.0")
+    db_path = storage_dir / "health_export.db"
+    store = Store(db_path)
+    store.backfill(storage_dir)
+
+    app = FastAPI(title="Health Export API", version="0.4.0")
 
     def authorize(authorization: str | None) -> None:
         if authorization != f"Bearer {api_token}":
@@ -53,18 +57,29 @@ def create_app(
         received_at = _utc_now()
         destination = storage_dir / f"{export_id}.json"
         temporary = destination.with_suffix(".json.tmp")
+
         # Stream body directly to disk — never buffer the full payload in RAM.
+        body_bytes = bytearray()
+        prefix = (
+            f'{{"id":{json.dumps(export_id)},'
+            f'"received_at":{json.dumps(received_at)},'
+            f'"payload":'
+        ).encode()
         with temporary.open("wb") as fh:
-            prefix = (
-                f'{{"id":{json.dumps(export_id)},'
-                f'"received_at":{json.dumps(received_at)},'
-                f'"payload":'
-            ).encode()
             fh.write(prefix)
             async for chunk in request.stream():
                 fh.write(chunk)
+                body_bytes.extend(chunk)
             fh.write(b"}")
         temporary.replace(destination)
+
+        # Parse the body we already have in memory and ingest into SQLite.
+        try:
+            payload = json.loads(body_bytes)
+        except Exception:
+            payload = None  # malformed JSON; file is saved, ingest skipped
+        store.ingest(export_id, received_at, payload)
+
         return {"id": export_id, "received_at": received_at}
 
     @app.get("/v1/exports")
@@ -84,7 +99,7 @@ def create_app(
         authorization: str | None = Header(default=None),
     ) -> dict[str, list[dict[str, str | None]]]:
         authorize(authorization)
-        return {"metrics": available_metrics(_load_exports())}
+        return {"metrics": store.available_metrics()}
 
     @app.get("/v1/health/summary")
     def get_summary(
@@ -107,8 +122,7 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
             )
-        return summarize_metric(
-            _load_exports(),
+        return store.summarize_metric(
             metric=metric,
             start_date=range_start,
             end_date=range_end,
@@ -127,7 +141,7 @@ def create_app(
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         authorize(authorization)
-        return {"workout_types": available_workout_types(_load_exports(), include_hevy=include_hevy)}
+        return {"workout_types": store.available_workout_types(include_hevy=include_hevy)}
 
     @app.get("/v1/workouts/summary")
     def get_workout_summary(
@@ -151,8 +165,7 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
             )
-        return summarize_workouts(
-            _load_exports(),
+        return store.summarize_workouts(
             start_date=range_start,
             end_date=range_end,
             granularity=granularity,
