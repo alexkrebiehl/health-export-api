@@ -126,6 +126,18 @@ def summarize_metric(
                     samples.append(sample)
 
     aggregation = "sum" if metric in _SUMMED_METRICS else "average"
+
+    # Sleep metrics: multiple export files may each carry a different sub-record
+    # (stage-transition fragment) of the same night. All fragments share the same
+    # Apple Health 'date' timestamp (midnight), so deduplicate by timestamp keeping
+    # the maximum value — i.e. the outermost/longest session for each night.
+    if metric.startswith("sleep_analysis"):
+        by_ts: dict[datetime, MetricSample] = {}
+        for s in samples:
+            if s.timestamp not in by_ts or s.value > by_ts[s.timestamp].value:
+                by_ts[s.timestamp] = s
+        samples = list(by_ts.values())
+
     groups: dict[str, list[float]] = defaultdict(list)
     for sample in samples:
         period = (
