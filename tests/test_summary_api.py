@@ -159,7 +159,7 @@ def _sleep_payload(sessions: list[dict]) -> dict:
 
 
 def test_sleep_main_night_is_longest_session_on_wake_date(tmp_path: Path) -> None:
-    """sleepStart before 08:00 or at/after 20:00 → main sleep; 08:00–20:00 same-day end → nap."""
+    """sleepStart before 12:00 or at/after 20:00 → main sleep; 12:00–20:00 same-day end → nap."""
     client = make_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
     # Main night starts just before midnight (23:00), nap starts at 14:00 same wake date.
@@ -194,6 +194,33 @@ def test_sleep_main_night_is_longest_session_on_wake_date(tmp_path: Path) -> Non
     assert main["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 7.0}]
     assert nap["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 1.5}]
     assert nap_count["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 1.0}]
+
+
+def test_sleep_morning_sleep_in_is_main_sleep(tmp_path: Path) -> None:
+    """A session starting between midnight and noon (e.g. 09:00) is main sleep, not a nap."""
+    client = make_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    payload = _sleep_payload([
+        {
+            "date": "2026-07-10 00:00:00 -0400",
+            "sleepStart": "2026-07-10 09:00:00 -0400",
+            "sleepEnd": "2026-07-10 11:00:00 -0400",
+            "totalSleep": 2.0, "deep": 0.3, "core": 1.2, "rem": 0.4, "awake": 0.1,
+            "source": "Apple Watch",
+        },
+    ])
+    assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
+
+    main = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis", "start_date": "2026-07-10", "end_date": "2026-07-10",
+    }).json()
+    nap = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis_nap", "start_date": "2026-07-10", "end_date": "2026-07-10",
+    }).json()
+
+    assert len(main["series"]) == 1
+    assert main["series"][0]["value"] == 2.0
+    assert nap["series"] == []
 
 
 def test_sleep_evening_start_crossing_midnight_discarded_as_artifact(tmp_path: Path) -> None:

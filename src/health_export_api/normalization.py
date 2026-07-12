@@ -211,11 +211,12 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
                 #   sleep_analysis_nap_count — nap count (count, sum)
                 #
                 # Classification rules (applied to sleepStart local time):
-                #   - sleepStart in [08:00, 20:00) AND ends same calendar date → nap
-                #   - sleepStart in [08:00, 20:00) AND crosses midnight       → artifact, discard
+                #   - sleepStart in [12:00, 20:00) AND ends same calendar date → nap
+                #   - sleepStart in [12:00, 20:00) AND crosses midnight       → artifact, discard
                 #     (Apple Watch sometimes creates a merged record spanning a daytime
                 #      nap + the following overnight period; it is not a real session.)
-                #   - sleepStart outside [08:00, 20:00)                       → main sleep
+                #   - sleepStart outside [12:00, 20:00)                       → main sleep
+                #     (includes morning sleep-ins, which are part of the main night)
                 #
                 # sleepEnd is used as the timestamp so cross-midnight sessions land on
                 # the correct wake date. Cross-file dedup (max value per timestamp) in
@@ -256,7 +257,7 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
                     start_local_date = sleep_start_ts.date()
                     end_local_date = sleep_end_ts.date()
 
-                    if 8 <= start_hour < 20:
+                    if 12 <= start_hour < 20:
                         if start_local_date == end_local_date:
                             session_type = "nap"
                         else:
