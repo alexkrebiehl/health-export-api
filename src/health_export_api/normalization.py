@@ -139,46 +139,6 @@ def summarize_metric(
                 by_ts[s.timestamp] = s
         samples = list(by_ts.values())
 
-    # For sleep_analysis (main night) and sleep_analysis_nap / sleep_analysis_nap_count:
-    # group all sessions by wake date (timestamp.date()), then classify the longest
-    # session as main sleep and all shorter sessions on that same date as naps.
-    if metric in ("sleep_analysis", "sleep_analysis_nap", "sleep_analysis_nap_count"):
-        # Group samples by wake date
-        by_date: dict[date, list[MetricSample]] = defaultdict(list)
-        for s in samples:
-            by_date[s.timestamp.date()].append(s)
-
-        main_samples: list[MetricSample] = []
-        nap_samples: list[MetricSample] = []
-        nap_count_samples: list[MetricSample] = []
-
-        for wake_date, day_samples in by_date.items():
-            # Longest session = main sleep
-            day_samples_sorted = sorted(day_samples, key=lambda s: s.value, reverse=True)
-            main_samples.append(day_samples_sorted[0])
-            for nap in day_samples_sorted[1:]:
-                nap_samples.append(MetricSample(
-                    metric="sleep_analysis_nap",
-                    unit=nap.unit,
-                    timestamp=nap.timestamp,
-                    value=nap.value,
-                    source=nap.source,
-                ))
-                nap_count_samples.append(MetricSample(
-                    metric="sleep_analysis_nap_count",
-                    unit="count",
-                    timestamp=nap.timestamp,
-                    value=1.0,
-                    source=nap.source,
-                ))
-
-        if metric == "sleep_analysis":
-            samples = main_samples
-        elif metric == "sleep_analysis_nap":
-            samples = nap_samples
-        else:  # sleep_analysis_nap_count
-            samples = nap_count_samples
-
     groups: dict[str, list[float]] = defaultdict(list)
     for sample in samples:
         period = (
@@ -242,23 +202,24 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
             if name == "sleep_analysis" and isinstance(raw_samples, list):
                 # Sleep samples carry per-stage fields rather than a single qty/value.
                 # Expands into seven queryable sub-metrics:
-                #   sleep_analysis          — main night's totalSleep (hr, average)
-                #   sleep_analysis_deep     — deep sleep (hr, average)
-                #   sleep_analysis_core     — core sleep (hr, average)
-                #   sleep_analysis_rem      — REM sleep (hr, average)
-                #   sleep_analysis_awake    — awake time (hr, average)
-                #   sleep_analysis_nap      — nap duration (hr, average)
+                #   sleep_analysis           — main night's totalSleep (hr, average)
+                #   sleep_analysis_deep      — deep sleep (hr, average)
+                #   sleep_analysis_core      — core sleep (hr, average)
+                #   sleep_analysis_rem       — REM sleep (hr, average)
+                #   sleep_analysis_awake     — awake time (hr, average)
+                #   sleep_analysis_nap       — nap duration (hr, average)
                 #   sleep_analysis_nap_count — nap count (count, sum)
                 #
-                # Apple Watch sometimes emits overlapping sub-records for the same
-                # session (stage-transition fragments sharing the same sleepEnd).
-                # Deduplicate within each export file by keeping only the record
-                # with the earliest sleepStart per unique sleepEnd.
+                # Classification rules (applied to sleepStart local time):
+                #   - sleepStart in [08:00, 20:00) AND ends same calendar date → nap
+                #   - sleepStart in [08:00, 20:00) AND crosses midnight       → artifact, discard
+                #     (Apple Watch sometimes creates a merged record spanning a daytime
+                #      nap + the following overnight period; it is not a real session.)
+                #   - sleepStart outside [08:00, 20:00)                       → main sleep
                 #
-                # Main sleep vs nap classification: group deduplicated sessions by
-                # wake date (sleepEnd.date()). The session with the greatest
-                # totalSleep on each wake date is the main sleep; any remaining
-                # sessions on that same wake date are naps.
+                # sleepEnd is used as the timestamp so cross-midnight sessions land on
+                # the correct wake date. Cross-file dedup (max value per timestamp) in
+                # summarize_metric handles duplicate exports of the same session.
                 _SLEEP_STAGE_FIELDS = {
                     "sleep_analysis": "totalSleep",
                     "sleep_analysis_deep": "deep",
@@ -270,89 +231,88 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
                     "sleep_analysis_nap",
                     "sleep_analysis_nap_count",
                 ]
-                # First pass: deduplicate by sleepEnd within this export file,
-                # keeping the record with the earliest sleepStart (longest session).
-                best: dict[str, Any] = {}  # sleepEnd_str -> raw_sample
+                sub: dict[str, list[MetricSample]] = {k: [] for k in _ALL_SUB_METRICS}
+
                 for raw_sample in raw_samples:
                     if not isinstance(raw_sample, Mapping):
                         continue
-                    sleep_end = raw_sample.get("sleepEnd") or raw_sample.get("inBedEnd")
-                    if not isinstance(sleep_end, str):
-                        continue
                     sleep_start_str = (
-                        raw_sample.get("sleepStart") or raw_sample.get("inBedStart") or ""
-                    )
-                    existing = best.get(sleep_end)
-                    if existing is None:
-                        best[sleep_end] = raw_sample
-                    else:
-                        existing_start = (
-                            existing.get("sleepStart") or existing.get("inBedStart") or ""
-                        )
-                        if sleep_start_str < existing_start:
-                            best[sleep_end] = raw_sample
-                # Second pass: emit MetricSamples, tagging each with its sleepEnd
-                # date so the caller can perform cross-file main/nap classification.
-                sub: dict[str, list[MetricSample]] = {k: [] for k in _ALL_SUB_METRICS}
-                for raw_sample in best.values():
-                    raw_date = (
-                        raw_sample.get("date")
-                        or raw_sample.get("sleepStart")
-                        or raw_sample.get("startDate")
+                        raw_sample.get("sleepStart") or raw_sample.get("inBedStart")
                     )
                     sleep_end_str = (
-                        raw_sample.get("sleepEnd") or raw_sample.get("inBedEnd") or raw_date
+                        raw_sample.get("sleepEnd") or raw_sample.get("inBedEnd")
                     )
-                    if not isinstance(raw_date, str) or not isinstance(sleep_end_str, str):
+                    if not isinstance(sleep_start_str, str) or not isinstance(sleep_end_str, str):
                         continue
-                    # Use sleepEnd as the timestamp so wake-date grouping works
-                    # correctly for sessions that cross midnight.
-                    timestamp = _parse_timestamp(sleep_end_str)
-                    if timestamp is None:
-                        timestamp = _parse_timestamp(raw_date)
-                    if timestamp is None:
+                    sleep_start_ts = _parse_timestamp(sleep_start_str)
+                    sleep_end_ts = _parse_timestamp(sleep_end_str)
+                    if sleep_start_ts is None or sleep_end_ts is None:
                         continue
-                    src = raw_sample.get("source")
-                    source = src if isinstance(src, str) else None
+
+                    # Classify by sleepStart local time
+                    local_start = sleep_start_ts.astimezone()
+                    start_hour = local_start.hour
+                    start_local_date = local_start.date()
+                    end_local_date = sleep_end_ts.astimezone().date()
+
+                    if 8 <= start_hour < 20:
+                        if start_local_date == end_local_date:
+                            session_type = "nap"
+                        else:
+                            # Cross-midnight daytime-start → Apple Watch artifact; discard.
+                            continue
+                    else:
+                        session_type = "main"
+
                     total = raw_sample.get("totalSleep")
                     if not isinstance(total, (int, float)) or isinstance(total, bool):
                         continue
-                    for sub_metric, field in _SLEEP_STAGE_FIELDS.items():
-                        raw_value = raw_sample.get(field)
-                        if isinstance(raw_value, (int, float)) and not isinstance(
-                            raw_value, bool
-                        ):
-                            sub[sub_metric].append(
-                                MetricSample(
-                                    metric=sub_metric,
-                                    unit=unit,
-                                    timestamp=timestamp,
-                                    value=float(raw_value),
-                                    source=source,
+
+                    src = raw_sample.get("source")
+                    source = src if isinstance(src, str) else None
+                    timestamp = sleep_end_ts  # wake-date grouping
+
+                    if session_type == "main":
+                        for sub_metric, field in _SLEEP_STAGE_FIELDS.items():
+                            raw_value = raw_sample.get(field)
+                            if isinstance(raw_value, (int, float)) and not isinstance(
+                                raw_value, bool
+                            ):
+                                sub[sub_metric].append(
+                                    MetricSample(
+                                        metric=sub_metric,
+                                        unit=unit,
+                                        timestamp=timestamp,
+                                        value=float(raw_value),
+                                        source=source,
+                                    )
                                 )
+                    else:  # nap
+                        sub["sleep_analysis_nap"].append(
+                            MetricSample(
+                                metric="sleep_analysis_nap",
+                                unit=unit,
+                                timestamp=timestamp,
+                                value=float(total),
+                                source=source,
                             )
-                    # Nap fields — populated during cross-file dedup in summarize_metric.
-                    # Emit a placeholder so the metric name appears in the catalog.
-                    sub["sleep_analysis_nap"].append(
-                        MetricSample(
-                            metric="sleep_analysis_nap",
-                            unit=unit,
-                            timestamp=timestamp,
-                            value=float(total),
-                            source=source,
                         )
-                    )
-                    sub["sleep_analysis_nap_count"].append(
-                        MetricSample(
-                            metric="sleep_analysis_nap_count",
-                            unit="count",
-                            timestamp=timestamp,
-                            value=1.0,
-                            source=source,
+                        sub["sleep_analysis_nap_count"].append(
+                            MetricSample(
+                                metric="sleep_analysis_nap_count",
+                                unit="count",
+                                timestamp=timestamp,
+                                value=1.0,
+                                source=source,
+                            )
                         )
-                    )
-                for sub_metric, samples in sub.items():
-                    yield {"name": sub_metric, "unit": unit if sub_metric != "sleep_analysis_nap_count" else "count", "samples": samples}
+
+                for sub_metric, samp in sub.items():
+                    yield {
+                        "name": sub_metric,
+                        "unit": unit if sub_metric != "sleep_analysis_nap_count" else "count",
+                        "samples": samp,
+                    }
             else:
                 samples: list[MetricSample] = []
                 if isinstance(raw_samples, list):

@@ -159,10 +159,10 @@ def _sleep_payload(sessions: list[dict]) -> dict:
 
 
 def test_sleep_main_night_is_longest_session_on_wake_date(tmp_path: Path) -> None:
-    """The longest session per wake date is classified as main sleep."""
+    """sleepStart before 08:00 or at/after 20:00 → main sleep; 08:00–20:00 same-day end → nap."""
     client = make_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
-    # One main night (7 hr) and one nap (1.5 hr), both ending on Jul 10.
+    # Main night starts just before midnight (23:00), nap starts at 14:00 same wake date.
     payload = _sleep_payload([
         {
             "date": "2026-07-10 00:00:00 -0400",
@@ -194,6 +194,46 @@ def test_sleep_main_night_is_longest_session_on_wake_date(tmp_path: Path) -> Non
     assert main["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 7.0}]
     assert nap["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 1.5}]
     assert nap_count["series"] == [{"period": "2026-07-10", "sample_count": 1, "value": 1.0}]
+
+
+def test_sleep_evening_start_crossing_midnight_discarded_as_artifact(tmp_path: Path) -> None:
+    """sleepStart in [08:00, 20:00) that crosses midnight is an Apple Watch artifact and discarded."""
+    client = make_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    # The real nap (same-day end) and the artifact (crosses midnight from same start)
+    payload = _sleep_payload([
+        {
+            # Real short nap: 17:42 → 18:23 same day
+            "date": "2026-05-04 00:00:00 -0400",
+            "sleepStart": "2026-05-04 17:42:00 -0400",
+            "sleepEnd": "2026-05-04 18:23:00 -0400",
+            "totalSleep": 0.69, "deep": 0.0, "core": 0.5, "rem": 0.1, "awake": 0.0,
+            "source": "Apple Watch",
+        },
+        {
+            # Artifact: same start 17:42, end next morning — should be discarded
+            "date": "2026-05-05 00:00:00 -0400",
+            "sleepStart": "2026-05-04 17:42:00 -0400",
+            "sleepEnd": "2026-05-05 07:49:00 -0400",
+            "totalSleep": 7.03, "deep": 0.8, "core": 4.0, "rem": 1.5, "awake": 0.3,
+            "source": "Apple Watch",
+        },
+    ])
+    assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
+
+    main = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis",
+        "start_date": "2026-05-04", "end_date": "2026-05-05",
+    }).json()
+    nap = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis_nap",
+        "start_date": "2026-05-04", "end_date": "2026-05-05",
+    }).json()
+
+    # Artifact is discarded; no main sleep in this window; nap appears on its end date.
+    assert main["series"] == []
+    assert len(nap["series"]) == 1
+    assert abs(nap["series"][0]["value"] - 0.69) < 0.01
 
 
 def test_sleep_no_nap_when_only_one_session_per_day(tmp_path: Path) -> None:
