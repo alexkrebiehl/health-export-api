@@ -132,6 +132,9 @@ class Store:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         con.execute("PRAGMA foreign_keys=ON")
+        # Keep temp tables in memory — avoids disk I/O errors when SQLite tries
+        # to write sort/aggregation temp files to /tmp on container overlay fs.
+        con.execute("PRAGMA temp_store=MEMORY")
         con.row_factory = sqlite3.Row
         return con
 
