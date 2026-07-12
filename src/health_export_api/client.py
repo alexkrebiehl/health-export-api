@@ -20,6 +20,35 @@ class HealthExportClient:
         response.raise_for_status()
         return response.json()
 
+    def list_metrics(self) -> list[dict[str, str | None]]:
+        response = self._http_client.get(
+            f"{self._base_url}/v1/metrics", headers=self._headers
+        )
+        response.raise_for_status()
+        return response.json()["metrics"]
+
+    def get_metric_summary(
+        self,
+        *,
+        metric: str,
+        granularity: str = "day",
+        date_range: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {"metric": metric, "granularity": granularity}
+        if date_range:
+            params["date_range"] = date_range
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        response = self._http_client.get(
+            f"{self._base_url}/v1/summary", headers=self._headers, params=params
+        )
+        response.raise_for_status()
+        return response.json()
+
     def list_exports(self, limit: int = 20) -> list[dict[str, Any]]:
         response = self._http_client.get(
             f"{self._base_url}/v1/exports",
