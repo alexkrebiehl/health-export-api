@@ -11,6 +11,12 @@ class FakeHealthExportClient:
     def get_metric_summary(self, **_: Any) -> dict[str, Any]:
         return {"metric": "step_count", "series": []}
 
+    def list_workout_types(self, *, include_hevy: bool = False) -> list[dict[str, Any]]:
+        return [{"name": "Outdoor Walk", "session_count": 3}]
+
+    def get_workout_summary(self, **_: Any) -> dict[str, Any]:
+        return {"workout_type": "Outdoor Walk", "series": []}
+
     def list_exports(self, limit: int) -> list[dict[str, Any]]:
         return [{"id": str(limit)}]
 
@@ -24,4 +30,6 @@ def test_mcp_server_exposes_export_query_tools() -> None:
         "list_exports",
         "list_metrics",
         "get_metric_summary",
+        "list_workout_types",
+        "get_workout_summary",
     }

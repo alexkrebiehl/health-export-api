@@ -27,6 +27,49 @@ class HealthExportClient:
         return response.json()["exports"]
 
     # -------------------------------------------------------------------------
+    # Workouts — /v1/workouts/
+    # -------------------------------------------------------------------------
+
+    def list_workout_types(self, *, include_hevy: bool = False) -> list[dict[str, Any]]:
+        """Return distinct workout types seen across stored exports."""
+        response = self._http_client.get(
+            f"{self._base_url}/v1/workouts/types",
+            headers=self._headers,
+            params={"include_hevy": str(include_hevy).lower()},
+        )
+        response.raise_for_status()
+        return response.json()["workout_types"]
+
+    def get_workout_summary(
+        self,
+        *,
+        granularity: str = "day",
+        workout_type: str | None = None,
+        date_range: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        include_hevy: bool = False,
+    ) -> dict[str, Any]:
+        """Aggregate workout sessions (walks, runs, cycling, etc.) over a date range."""
+        params: dict[str, str] = {"granularity": granularity,
+                                  "include_hevy": str(include_hevy).lower()}
+        if workout_type:
+            params["workout_type"] = workout_type
+        if date_range:
+            params["date_range"] = date_range
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        response = self._http_client.get(
+            f"{self._base_url}/v1/workouts/summary",
+            headers=self._headers,
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # -------------------------------------------------------------------------
     # Health metrics — /v1/health/
     # -------------------------------------------------------------------------
 
