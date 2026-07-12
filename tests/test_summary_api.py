@@ -236,6 +236,49 @@ def test_sleep_evening_start_crossing_midnight_discarded_as_artifact(tmp_path: P
     assert abs(nap["series"][0]["value"] - 0.69) < 0.01
 
 
+def test_sleep_classification_uses_embedded_timezone_not_server_timezone(tmp_path: Path) -> None:
+    """Hour comparison uses the offset in the timestamp string, not the server's local timezone.
+
+    A sleepStart of '04:49 -0400' is 4 AM EDT. It must remain classified as main sleep
+    (start_hour=4, outside [8,20)) even when the server runs in UTC (where 04:49-0400 = 08:49),
+    which would incorrectly fall inside the daytime window.
+    """
+    client = make_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    payload = _sleep_payload([
+        {
+            # Full overnight session: 23:41 EDT → 07:31 EDT next day — main sleep
+            "date": "2026-07-12 00:00:00 -0400",
+            "sleepStart": "2026-07-11 23:41:00 -0400",
+            "sleepEnd": "2026-07-12 07:31:00 -0400",
+            "totalSleep": 7.69, "deep": 0.8, "core": 4.8, "rem": 1.4, "awake": 0.4,
+            "source": "Apple Watch",
+        },
+        {
+            # Sub-record: 04:49 EDT → 07:31 EDT — also main sleep (start_hour=4),
+            # deduplicated away by max-value logic (7.69 > 2.66).
+            "date": "2026-07-12 00:00:00 -0400",
+            "sleepStart": "2026-07-12 04:49:00 -0400",
+            "sleepEnd": "2026-07-12 07:31:00 -0400",
+            "totalSleep": 2.66, "deep": 0.3, "core": 1.5, "rem": 0.5, "awake": 0.1,
+            "source": "Apple Watch",
+        },
+    ])
+    assert client.post("/v1/exports", headers=headers, json=payload).status_code == 201
+
+    main = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis", "start_date": "2026-07-12", "end_date": "2026-07-12",
+    }).json()
+    nap = client.get("/v1/health/summary", headers=headers, params={
+        "metric": "sleep_analysis_nap", "start_date": "2026-07-12", "end_date": "2026-07-12",
+    }).json()
+
+    # 7.69 hr main sleep survives; sub-record deduped out; no naps
+    assert len(main["series"]) == 1
+    assert abs(main["series"][0]["value"] - 7.69) < 0.01
+    assert nap["series"] == []
+
+
 def test_sleep_no_nap_when_only_one_session_per_day(tmp_path: Path) -> None:
     """Nights with only one session produce no nap entries."""
     client = make_client(tmp_path)

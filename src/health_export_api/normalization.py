@@ -249,11 +249,12 @@ def _iter_metrics(payload: Any) -> Iterable[dict[str, Any]]:
                     if sleep_start_ts is None or sleep_end_ts is None:
                         continue
 
-                    # Classify by sleepStart local time
-                    local_start = sleep_start_ts.astimezone()
-                    start_hour = local_start.hour
-                    start_local_date = local_start.date()
-                    end_local_date = sleep_end_ts.astimezone().date()
+                    # Classify by sleepStart local time (using the timezone offset
+                    # embedded in the original string — do NOT call .astimezone(),
+                    # which would convert to the server timezone and shift hours).
+                    start_hour = sleep_start_ts.hour
+                    start_local_date = sleep_start_ts.date()
+                    end_local_date = sleep_end_ts.date()
 
                     if 8 <= start_hour < 20:
                         if start_local_date == end_local_date:
