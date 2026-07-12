@@ -3,9 +3,9 @@ import os
 import secrets
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 
 from health_export_api.normalization import available_metrics, resolve_date_range, summarize_metric
 
@@ -21,7 +21,7 @@ def create_app(
         raise ValueError("api_token must not be empty")
 
     storage_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="Health Export API", version="0.1.0")
+    app = FastAPI(title="Health Export API", version="0.2.0")
 
     def authorize(authorization: str | None) -> None:
         if authorization != f"Bearer {api_token}":
@@ -36,16 +36,27 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/v1/exports", status_code=status.HTTP_201_CREATED)
-    def create_export(
-        payload: Annotated[Any, Body()], authorization: str | None = Header(default=None)
+    async def create_export(
+        request: Request, authorization: str | None = Header(default=None)
     ) -> dict[str, str]:
         authorize(authorization)
         export_id = secrets.token_urlsafe(18)
         received_at = _utc_now()
-        record = {"id": export_id, "received_at": received_at, "payload": payload}
         destination = storage_dir / f"{export_id}.json"
         temporary = destination.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(record, separators=(",", ":")), encoding="utf-8")
+        # Stream body directly to disk — never buffer the full payload in RAM.
+        # The stored file is a valid JSON envelope:
+        #   {"id":"...","received_at":"...","payload":<raw_body>}
+        with temporary.open("wb") as fh:
+            prefix = (
+                f'{{"id":{json.dumps(export_id)},'
+                f'"received_at":{json.dumps(received_at)},'
+                f'"payload":'
+            ).encode()
+            fh.write(prefix)
+            async for chunk in request.stream():
+                fh.write(chunk)
+            fh.write(b"}")
         temporary.replace(destination)
         return {"id": export_id, "received_at": received_at}
 
@@ -55,14 +66,6 @@ def create_app(
             for path in storage_dir.glob("*.json")
         ]
         return sorted(records, key=lambda record: record["received_at"], reverse=True)
-
-    @app.get("/v1/exports")
-    def list_exports(
-        limit: int = Query(default=20, ge=1, le=100),
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, list[dict[str, Any]]]:
-        authorize(authorization)
-        return {"exports": load_exports()[:limit]}
 
     @app.get("/v1/metrics")
     def list_metrics(
@@ -89,7 +92,9 @@ def create_app(
                 today=summary_today or date.today(),
             )
         except ValueError as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+            )
         return summarize_metric(
             load_exports(),
             metric=metric,
@@ -97,6 +102,14 @@ def create_app(
             end_date=range_end,
             granularity=granularity,
         )
+
+    @app.get("/v1/exports")
+    def list_exports(
+        limit: int = Query(default=20, ge=1, le=100),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, list[dict[str, Any]]]:
+        authorize(authorization)
+        return {"exports": load_exports()[:limit]}
 
     @app.get("/v1/exports/latest")
     def get_latest_export(
