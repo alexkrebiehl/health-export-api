@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 
 from health_export_api.normalization import available_metrics, resolve_date_range, summarize_metric
+from health_export_api.workout_normalization import available_workout_types, summarize_workouts
 
 
 def _utc_now() -> str:
@@ -112,6 +113,51 @@ def create_app(
             start_date=range_start,
             end_date=range_end,
             granularity=granularity,
+        )
+
+    # -------------------------------------------------------------------------
+    # Workouts — /v1/workouts/
+    # "Traditional Strength Training" is written by Hevy to HealthKit and is
+    # excluded by default to avoid double-counting with Hevy MCP data.
+    # -------------------------------------------------------------------------
+
+    @app.get("/v1/workouts/types")
+    def list_workout_types(
+        include_hevy: bool = Query(default=False),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        return {"workout_types": available_workout_types(_load_exports(), include_hevy=include_hevy)}
+
+    @app.get("/v1/workouts/summary")
+    def get_workout_summary(
+        workout_type: str | None = Query(default=None),
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        granularity: str = Query(default="day", pattern="^(day|month)$"),
+        include_hevy: bool = Query(default=False),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            range_start, range_end = resolve_date_range(
+                date_range=date_range,
+                start_date=start_date,
+                end_date=end_date,
+                today=summary_today or date.today(),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+            )
+        return summarize_workouts(
+            _load_exports(),
+            start_date=range_start,
+            end_date=range_end,
+            granularity=granularity,
+            workout_type=workout_type,
+            include_hevy=include_hevy,
         )
 
     # -------------------------------------------------------------------------
