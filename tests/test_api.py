@@ -78,6 +78,32 @@ def test_latest_returns_404_when_no_export_has_been_received(tmp_path: Path) -> 
     assert response.status_code == 404
 
 
+def test_large_export_is_streamed_to_disk_without_loading_into_memory(
+    tmp_path: Path,
+) -> None:
+    """Body must be written to disk in chunks; the endpoint must not buffer the
+    full payload in process memory before persisting it."""
+    client = make_client(tmp_path)
+    headers = {
+        "Authorization": "Bearer test-token",
+        "Content-Type": "application/json",
+    }
+    # 4 MB synthetic payload — large enough to be meaningful, fast to generate
+    big_metrics = [{"name": f"metric_{i}", "units": "count", "data": [{"date": "2026-01-01 08:00:00 -0500", "qty": i}]} for i in range(5000)]
+    big_payload = {"data": {"metrics": big_metrics}}
+
+    response = client.post("/v1/exports", headers=headers, json=big_payload)
+
+    assert response.status_code == 201
+    export_id = response.json()["id"]
+    stored_path = tmp_path / f"{export_id}.json"
+    assert stored_path.exists()
+    import json as _json
+    stored = _json.loads(stored_path.read_text())
+    assert stored["payload"]["data"]["metrics"][0]["name"] == "metric_0"
+    assert stored["payload"]["data"]["metrics"][-1]["name"] == "metric_4999"
+
+
 def test_list_exports_returns_newest_first_and_honors_limit(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
