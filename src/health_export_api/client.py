@@ -69,6 +69,21 @@ class HealthExportClient:
         response.raise_for_status()
         return response.json()
 
+    def get_workout_route(
+        self, workout_id: str, *, max_points: int | None = None
+    ) -> dict[str, Any]:
+        """Get GPS route data for a specific workout."""
+        params: dict[str, str] = {}
+        if max_points is not None:
+            params["max_points"] = str(max_points)
+        response = self._http_client.get(
+            f"{self._base_url}/v1/workouts/{workout_id}/route",
+            headers=self._headers,
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
     # -------------------------------------------------------------------------
     # Health metrics — /v1/health/
     # -------------------------------------------------------------------------

@@ -56,6 +56,7 @@ from health_export_api.normalization import (
 from health_export_api.workout_normalization import (
     HEVY_WORKOUT_TYPE,
     _iter_workouts,
+    _iter_route_points,
 )
 
 log = logging.getLogger(__name__)
@@ -98,9 +99,28 @@ CREATE TABLE IF NOT EXISTS workout_sessions (
     duration_min     REAL NOT NULL DEFAULT 0,
     distance_mi      REAL NOT NULL DEFAULT 0,
     active_energy    REAL NOT NULL DEFAULT 0,
-    avg_heart_rate   REAL          -- nullable: not all workouts have HR
+    avg_heart_rate   REAL,         -- nullable: not all workouts have HR
+    has_route        INTEGER NOT NULL DEFAULT 0  -- 1 if route data exists
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_ws_name_date ON workout_sessions (name, started_date);
+
+CREATE TABLE IF NOT EXISTS workout_routes (
+    workout_id          TEXT NOT NULL,
+    point_index         INTEGER NOT NULL,
+    timestamp           TEXT NOT NULL,      -- ISO-8601
+    latitude            REAL NOT NULL,
+    longitude           REAL NOT NULL,
+    altitude            REAL,               -- meters
+    horizontal_accuracy REAL,               -- meters
+    vertical_accuracy   REAL,               -- meters
+    speed               REAL,               -- m/s
+    speed_accuracy      REAL,               -- m/s
+    course              REAL,               -- degrees
+    course_accuracy     REAL,               -- degrees
+    PRIMARY KEY (workout_id, point_index),
+    FOREIGN KEY (workout_id) REFERENCES workout_sessions(id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_wr_workout ON workout_routes (workout_id);
 
 CREATE TABLE IF NOT EXISTS processed_exports (
     export_id   TEXT PRIMARY KEY,
@@ -248,14 +268,43 @@ class Store:
                 sess.distance_mi,
                 sess.active_energy_kcal,
                 sess.avg_heart_rate,
+                1 if sess.has_route else 0,
             ))
         if rows:
             con.executemany(
                 "INSERT OR IGNORE INTO workout_sessions "
                 "(id, name, started_iso, started_date, started_month, "
-                " duration_min, distance_mi, active_energy, avg_heart_rate) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " duration_min, distance_mi, active_energy, avg_heart_rate, has_route) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
+            )
+        
+        # Ingest route points
+        route_rows = []
+        for point in _iter_route_points([fake_record]):
+            route_rows.append((
+                point.workout_id,
+                point.point_index,
+                point.timestamp.isoformat(),
+                point.latitude,
+                point.longitude,
+                point.altitude,
+                point.horizontal_accuracy,
+                point.vertical_accuracy,
+                point.speed,
+                point.speed_accuracy,
+                point.course,
+                point.course_accuracy,
+            ))
+        
+        if route_rows:
+            con.executemany(
+                "INSERT OR IGNORE INTO workout_routes "
+                "(workout_id, point_index, timestamp, latitude, longitude, "
+                " altitude, horizontal_accuracy, vertical_accuracy, speed, "
+                " speed_accuracy, course, course_accuracy) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                route_rows,
             )
 
     # ------------------------------------------------------------------
@@ -568,6 +617,100 @@ class Store:
             "include_hevy": include_hevy,
             "series": series,
         }
+
+    def get_workout_route(
+        self, workout_id: str, *, max_points: int | None = None
+    ) -> dict[str, Any]:
+        """Retrieve GPS route data for a specific workout.
+        
+        Args:
+            workout_id: The HealthKit workout UUID
+            max_points: Optional limit on number of points returned (for large routes)
+        
+        Returns:
+            Dictionary with workout metadata and route points
+        """
+        con = self._connect()
+        try:
+            # Get workout metadata
+            workout_row = con.execute(
+                "SELECT id, name, started_iso, duration_min, distance_mi, "
+                "       active_energy, avg_heart_rate, has_route "
+                "FROM workout_sessions WHERE id = ?",
+                (workout_id,),
+            ).fetchone()
+            
+            if not workout_row:
+                return {
+                    "error": "Workout not found",
+                    "workout_id": workout_id,
+                }
+            
+            if not workout_row["has_route"]:
+                return {
+                    "workout_id": workout_id,
+                    "name": workout_row["name"],
+                    "started": workout_row["started_iso"],
+                    "has_route": False,
+                    "route_points": [],
+                }
+            
+            # Get route points
+            limit_clause = f"LIMIT {max_points}" if max_points else ""
+            route_rows = con.execute(
+                f"""
+                SELECT point_index, timestamp, latitude, longitude, altitude,
+                       horizontal_accuracy, vertical_accuracy, speed,
+                       speed_accuracy, course, course_accuracy
+                FROM workout_routes
+                WHERE workout_id = ?
+                ORDER BY point_index
+                {limit_clause}
+                """,
+                (workout_id,),
+            ).fetchall()
+            
+            route_points = [
+                {
+                    "index": r["point_index"],
+                    "timestamp": r["timestamp"],
+                    "latitude": r["latitude"],
+                    "longitude": r["longitude"],
+                    "altitude": r["altitude"],
+                    "horizontal_accuracy": r["horizontal_accuracy"],
+                    "vertical_accuracy": r["vertical_accuracy"],
+                    "speed": r["speed"],
+                    "speed_accuracy": r["speed_accuracy"],
+                    "course": r["course"],
+                    "course_accuracy": r["course_accuracy"],
+                }
+                for r in route_rows
+            ]
+            
+            # Get total point count if we're limiting
+            total_points = len(route_points)
+            if max_points:
+                count_row = con.execute(
+                    "SELECT COUNT(*) as cnt FROM workout_routes WHERE workout_id = ?",
+                    (workout_id,),
+                ).fetchone()
+                total_points = count_row["cnt"]
+            
+            return {
+                "workout_id": workout_id,
+                "name": workout_row["name"],
+                "started": workout_row["started_iso"],
+                "duration_min": workout_row["duration_min"],
+                "distance_mi": workout_row["distance_mi"],
+                "active_energy_kcal": workout_row["active_energy"],
+                "avg_heart_rate": workout_row["avg_heart_rate"],
+                "has_route": True,
+                "total_points": total_points,
+                "returned_points": len(route_points),
+                "route_points": route_points,
+            }
+        finally:
+            con.close()
 
 
 # ------------------------------------------------------------------

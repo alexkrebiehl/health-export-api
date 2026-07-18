@@ -36,6 +36,10 @@ class ExportQueryClient(Protocol):
         include_hevy: bool,
     ) -> dict[str, Any]: ...
 
+    def get_workout_route(
+        self, workout_id: str, *, max_points: int | None
+    ) -> dict[str, Any]: ...
+
 
 def create_mcp_server(client: ExportQueryClient) -> FastMCP:
     server = FastMCP("Health Export API")
@@ -118,6 +122,23 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
             end_date=end_date,
             include_hevy=include_hevy,
         )
+
+    @server.tool()
+    def get_workout_route(
+        workout_id: str, max_points: int | None = None
+    ) -> dict[str, Any]:
+        """Get GPS route data for a specific workout.
+        
+        Returns workout metadata plus GPS coordinates, altitude, speed, and course
+        for each point along the route. Useful for mapping, analyzing pace/elevation,
+        or exporting to GPX.
+        
+        workout_id: HealthKit workout UUID (from workout summary or list_exports)
+        max_points: optional limit on number of points returned (default: all points)
+        """
+        if max_points is not None and not 1 <= max_points <= 10000:
+            raise ValueError("max_points must be between 1 and 10000")
+        return client.get_workout_route(workout_id, max_points=max_points)
 
     # -------------------------------------------------------------------------
     # Raw exports

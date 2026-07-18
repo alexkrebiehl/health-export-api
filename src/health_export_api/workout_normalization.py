@@ -39,6 +39,23 @@ class WorkoutSession:
     distance_mi: float
     active_energy_kcal: float
     avg_heart_rate: float | None
+    has_route: bool = False
+
+
+@dataclass(frozen=True)
+class RoutePoint:
+    workout_id: str
+    point_index: int
+    timestamp: datetime
+    latitude: float
+    longitude: float
+    altitude: float | None = None
+    horizontal_accuracy: float | None = None
+    vertical_accuracy: float | None = None
+    speed: float | None = None
+    speed_accuracy: float | None = None
+    course: float | None = None
+    course_accuracy: float | None = None
 
 
 def _parse_timestamp(value: str) -> datetime | None:
@@ -104,6 +121,10 @@ def _iter_workouts(records: Iterable[Mapping[str, Any]]) -> Iterable[WorkoutSess
             if avg_hr == 0.0:
                 avg_hr = None
 
+            # Check if route data exists
+            route_data = raw.get("route", [])
+            has_route = isinstance(route_data, list) and len(route_data) > 0
+
             yield WorkoutSession(
                 id=wid,
                 name=name,
@@ -112,7 +133,74 @@ def _iter_workouts(records: Iterable[Mapping[str, Any]]) -> Iterable[WorkoutSess
                 distance_mi=dist_mi,
                 active_energy_kcal=ae,
                 avg_heart_rate=avg_hr,
+                has_route=has_route,
             )
+
+
+def _iter_route_points(records: Iterable[Mapping[str, Any]]) -> Iterable[RoutePoint]:
+    """Yield RoutePoint objects for workouts that have GPS data."""
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        raw_list = data.get("workouts")
+        if not isinstance(raw_list, list):
+            continue
+        
+        for raw in raw_list:
+            if not isinstance(raw, Mapping):
+                continue
+            
+            wid = raw.get("id")
+            if not isinstance(wid, str) or not wid:
+                continue
+            
+            route_data = raw.get("route", [])
+            if not isinstance(route_data, list) or not route_data:
+                continue
+            
+            for idx, point in enumerate(route_data):
+                if not isinstance(point, Mapping):
+                    continue
+                
+                # Required fields
+                lat = point.get("latitude")
+                lon = point.get("longitude")
+                ts_str = point.get("timestamp")
+                
+                if lat is None or lon is None or not isinstance(ts_str, str):
+                    continue
+                
+                ts = _parse_timestamp(ts_str)
+                if ts is None:
+                    continue
+                
+                # Optional fields with safe float conversion
+                def safe_float(val: Any) -> float | None:
+                    if val is None:
+                        return None
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return None
+                
+                yield RoutePoint(
+                    workout_id=wid,
+                    point_index=idx,
+                    timestamp=ts,
+                    latitude=float(lat),
+                    longitude=float(lon),
+                    altitude=safe_float(point.get("altitude")),
+                    horizontal_accuracy=safe_float(point.get("horizontalAccuracy")),
+                    vertical_accuracy=safe_float(point.get("verticalAccuracy")),
+                    speed=safe_float(point.get("speed")),
+                    speed_accuracy=safe_float(point.get("speedAccuracy")),
+                    course=safe_float(point.get("course")),
+                    course_accuracy=safe_float(point.get("courseAccuracy")),
+                )
 
 
 

@@ -173,6 +173,15 @@ def create_app(
             include_hevy=include_hevy,
         )
 
+    @app.get("/v1/workouts/{workout_id}/route")
+    def get_workout_route(
+        workout_id: str,
+        max_points: int | None = Query(default=None, ge=1, le=10000),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        return store.get_workout_route(workout_id, max_points=max_points)
+
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
