@@ -173,6 +173,49 @@ def create_app(
             include_hevy=include_hevy,
         )
 
+    # Declared ahead of /{workout_id}/route so the literal path wins the match.
+    @app.get("/v1/workouts/routes/geojson")
+    def get_route_coverage_geojson(
+        lat: float = Query(default=..., ge=-90, le=90),
+        lon: float = Query(default=..., ge=-180, le=180),
+        width: float = Query(default=..., gt=0),
+        height: float = Query(default=..., gt=0),
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        workout_type: list[str] | None = Query(default=None),
+        max_vertices: int = Query(default=50_000, ge=100, le=200_000),
+        tolerance_m: float = Query(default=15.0, ge=1, le=1000),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        # The timeframe is optional here, unlike the summary endpoints, so only
+        # resolve a range when the caller actually asked for one.
+        range_start = range_end = None
+        if date_range or start_date or end_date:
+            try:
+                range_start, range_end = resolve_date_range(
+                    date_range=date_range,
+                    start_date=start_date,
+                    end_date=end_date,
+                    today=summary_today or date.today(),
+                )
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+                )
+        return store.route_coverage_geojson(
+            lat=lat,
+            lon=lon,
+            width=width,
+            height=height,
+            start_date=range_start,
+            end_date=range_end,
+            workout_types=workout_type,
+            max_vertices=max_vertices,
+            tolerance_m=tolerance_m,
+        )
+
     @app.get("/v1/workouts/{workout_id}/route")
     def get_workout_route(
         workout_id: str,

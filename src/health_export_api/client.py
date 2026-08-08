@@ -84,6 +84,47 @@ class HealthExportClient:
         response.raise_for_status()
         return response.json()
 
+    def get_route_coverage_geojson(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        width: float,
+        height: float,
+        date_range: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        workout_type: list[str] | None = None,
+        max_vertices: int | None = None,
+        tolerance_m: float | None = None,
+    ) -> dict[str, Any]:
+        """Get a GeoJSON coverage map of all routes inside a box."""
+        params: dict[str, Any] = {
+            "lat": str(lat),
+            "lon": str(lon),
+            "width": str(width),
+            "height": str(height),
+        }
+        if date_range:
+            params["date_range"] = date_range
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if workout_type:
+            params["workout_type"] = workout_type
+        if max_vertices is not None:
+            params["max_vertices"] = str(max_vertices)
+        if tolerance_m is not None:
+            params["tolerance_m"] = str(tolerance_m)
+        response = self._http_client.get(
+            f"{self._base_url}/v1/workouts/routes/geojson",
+            headers=self._headers,
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
     # -------------------------------------------------------------------------
     # Health metrics — /v1/health/
     # -------------------------------------------------------------------------

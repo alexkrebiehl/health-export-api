@@ -45,8 +45,17 @@ import sqlite3
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
+from health_export_api.geo import (
+    Cell,
+    CellBudgetExceeded,
+    SegmentAggregator,
+    bounding_box,
+    count_chain_vertices,
+    count_vertices,
+    trim_to_vertex_budget,
+)
 from health_export_api.normalization import (
     SleepSession,
     _SUMMED_METRICS,
@@ -60,6 +69,18 @@ from health_export_api.workout_normalization import (
 )
 
 log = logging.getLogger(__name__)
+
+# How many times route_coverage_geojson may coarsen the snapping tolerance
+# while trying to fit inside the caller's vertex budget.
+_MAX_TOLERANCE_PASSES = 6
+
+# Floor on how many grid cells a single pass may hold, so a modest vertex
+# budget over a small area still gets a fine grid to work with.
+_MIN_CELL_BUDGET = 50_000
+
+# Tolerance multiplier when a pass runs out of cells. Cells along a route scale
+# with 1/tolerance, so this cuts the next pass to roughly a quarter.
+_OVERFLOW_GROWTH = 4.0
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -121,6 +142,8 @@ CREATE TABLE IF NOT EXISTS workout_routes (
     FOREIGN KEY (workout_id) REFERENCES workout_sessions(id) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_wr_workout ON workout_routes (workout_id);
+-- Supports the bounding-box scan behind the route-coverage GeoJSON endpoint.
+CREATE INDEX IF NOT EXISTS idx_wr_latlon ON workout_routes (latitude, longitude);
 
 CREATE TABLE IF NOT EXISTS processed_exports (
     export_id   TEXT PRIMARY KEY,
@@ -711,6 +734,171 @@ class Store:
             }
         finally:
             con.close()
+
+    # ------------------------------------------------------------------
+    # Query — route coverage
+    # ------------------------------------------------------------------
+
+    def route_coverage_geojson(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        width: float,
+        height: float,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        workout_types: Sequence[str] | None = None,
+        max_vertices: int = 50_000,
+        tolerance_m: float = 15.0,
+    ) -> dict[str, Any]:
+        """Union every route inside a box into a GeoJSON coverage map.
+
+        Args:
+            lat, lon: Centre of the box.
+            width, height: Box dimensions in metres.
+            start_date, end_date: Optional filter on the workout's start date.
+            workout_types: Optional whitelist of workout names; all by default.
+            max_vertices: Hard ceiling on coordinates in the result.
+            tolerance_m: Starting grid size; paths closer than this merge.
+
+        Returns:
+            A GeoJSON FeatureCollection of LineStrings, each carrying the
+            number of sessions that traversed it.
+        """
+        box = bounding_box(lat=lat, lon=lon, width_m=width, height_m=height)
+        bbox = [box.min_lat, box.max_lat, box.min_lon, box.max_lon]
+
+        # Which workouts touched the box at all. Deliberately no `has_route`
+        # filter: that column never flips 0 -> 1 for a workout first ingested
+        # without its route, so asking the points table is the only way to see
+        # all the data that is actually there.
+        filters = [
+            """EXISTS (
+                   SELECT 1 FROM workout_routes r
+                   WHERE r.workout_id = s.id
+                     AND r.latitude BETWEEN ? AND ?
+                     AND r.longitude BETWEEN ? AND ?
+               )"""
+        ]
+        params: list[Any] = list(bbox)
+
+        # Filter on the session's start date, not the route point's timestamp:
+        # timestamps are stored as offset-bearing ISO strings, so comparing
+        # them lexicographically is unsound across differing UTC offsets.
+        if start_date is not None and end_date is not None:
+            filters.append("s.started_date BETWEEN ? AND ?")
+            params.extend([start_date.isoformat(), end_date.isoformat()])
+        if workout_types:
+            placeholders = ", ".join("?" * len(workout_types))
+            filters.append(f"s.name IN ({placeholders})")
+            params.extend(workout_types)
+
+        con = self._connect()
+        try:
+            sessions = con.execute(
+                f"""
+                SELECT s.id, s.name, s.started_date
+                FROM workout_sessions s
+                WHERE {" AND ".join(filters)}
+                """,
+                params,
+            ).fetchall()
+
+            # A pass may not hold more cells than the answer could plausibly
+            # use, with headroom for cells that end up carrying no segment.
+            cell_budget = max(2 * max_vertices, _MIN_CELL_BUDGET)
+
+            tolerance = tolerance_m
+            features: list[dict[str, Any]] = []
+            # Last pass that ran to completion, with the tolerance that built
+            # it, kept so the loop has something to fall back on if it never
+            # gets under the budget.
+            completed: tuple[SegmentAggregator, list[list[Cell]], float] | None = None
+
+            for _ in range(_MAX_TOLERANCE_PASSES):
+                aggregator = SegmentAggregator(
+                    center_lat=lat, tolerance_m=tolerance, max_cells=cell_budget
+                )
+                try:
+                    self._feed_aggregator(con, sessions, bbox, aggregator)
+                except CellBudgetExceeded:
+                    # Abandoned before there was an answer to scale from, so
+                    # just step the grid up and try again.
+                    tolerance *= _OVERFLOW_GROWTH
+                    completed = None
+                    continue
+
+                # Chains are cheap; only the accepted pass pays to build the
+                # feature dictionaries around them.
+                chains = aggregator.chains()
+                completed = (aggregator, chains, tolerance)
+                vertices = count_chain_vertices(chains)
+                if vertices <= max_vertices:
+                    features = aggregator.features_from_chains(chains)
+                    break
+                # Vertices fall off roughly linearly as cells grow; overshoot a
+                # little so we converge instead of creeping up on the budget.
+                tolerance *= (vertices / max_vertices) * 1.1
+            else:
+                if completed is not None:
+                    aggregator, chains, tolerance = completed
+                    features = trim_to_vertex_budget(
+                        aggregator.features_from_chains(chains), max_vertices
+                    )
+            vertices = count_vertices(features)
+        finally:
+            con.close()
+
+        return {
+            "type": "FeatureCollection",
+            "bbox": box.as_geojson_bbox(),
+            "features": features,
+            "properties": {
+                "tolerance_m": round(tolerance, 3),
+                "vertex_count": vertices,
+                "feature_count": len(features),
+                # The session query already required a point inside the box.
+                "workout_count": len(sessions),
+                "start_date": start_date.isoformat() if start_date else None,
+                "end_date": end_date.isoformat() if end_date else None,
+                "workout_types": list(workout_types) if workout_types else None,
+            },
+        }
+
+    def _feed_aggregator(
+        self,
+        con: sqlite3.Connection,
+        sessions: list[sqlite3.Row],
+        bbox: list[float],
+        aggregator: SegmentAggregator,
+    ) -> None:
+        """Feed the aggregator one workout's in-box points at a time.
+
+        One query per workout rather than a single join sorted by workout: the
+        primary key of ``workout_routes`` is (workout_id, point_index), so this
+        shape is a plain index-ordered scan with no sort step. A joined query
+        with a global ORDER BY needs a temp B-tree instead, and `temp_store` is
+        pinned to MEMORY, which would put a whole city's routes on the heap.
+        Here only one workout is ever resident.
+        """
+        for session in sessions:
+            rows = con.execute(
+                """
+                SELECT point_index, latitude, longitude
+                FROM workout_routes
+                WHERE workout_id = ?
+                  AND latitude BETWEEN ? AND ?
+                  AND longitude BETWEEN ? AND ?
+                ORDER BY point_index
+                """,
+                (session["id"], *bbox),
+            ).fetchall()
+            aggregator.add_workout(
+                [(r["point_index"], r["latitude"], r["longitude"]) for r in rows],
+                workout_type=session["name"],
+                started_date=session["started_date"],
+            )
 
 
 # ------------------------------------------------------------------

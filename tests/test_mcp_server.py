@@ -17,6 +17,12 @@ class FakeHealthExportClient:
     def get_workout_summary(self, **_: Any) -> dict[str, Any]:
         return {"workout_type": "Outdoor Walk", "series": []}
 
+    def get_workout_route(self, workout_id: str, **_: Any) -> dict[str, Any]:
+        return {"workout_id": workout_id, "route_points": []}
+
+    def get_route_coverage_geojson(self, **_: Any) -> dict[str, Any]:
+        return {"type": "FeatureCollection", "features": []}
+
     def list_exports(self, limit: int) -> list[dict[str, Any]]:
         return [{"id": str(limit)}]
 
@@ -32,4 +38,6 @@ def test_mcp_server_exposes_export_query_tools() -> None:
         "get_metric_summary",
         "list_workout_types",
         "get_workout_summary",
+        "get_workout_route",
+        "get_route_coverage_geojson",
     }

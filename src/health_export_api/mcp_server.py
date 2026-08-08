@@ -140,6 +140,50 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
             raise ValueError("max_points must be between 1 and 10000")
         return client.get_workout_route(workout_id, max_points=max_points)
 
+    @server.tool()
+    def get_route_coverage_geojson(
+        lat: float,
+        lon: float,
+        width: float,
+        height: float,
+        date_range: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        workout_type: list[str] | None = None,
+        max_vertices: int = 2000,
+        tolerance_m: float = 15.0,
+    ) -> dict[str, Any]:
+        """Get a GeoJSON map of every route travelled inside a geographic box.
+
+        Merges all matching workout routes into one set of paths, so a street
+        walked many times is a single line carrying a "count" of how many
+        sessions used it. Useful for street-coverage or completion maps.
+
+        lat / lon: centre of the box
+        width / height: box size in metres, e.g. 2000 for a 2km span
+        date_range: e.g. "last 30 days", "June 30 through July 4". Omit for all time.
+        start_date / end_date: ISO-8601 alternative to date_range
+        workout_type: list of types to include, e.g. ["Outdoor Walk"]. Omit for all.
+        max_vertices: ceiling on coordinates returned; the tolerance is coarsened
+                      automatically to fit. Keep this small — GeoJSON is verbose.
+        tolerance_m: paths closer together than this merge into one, e.g. the two
+                     sides of a street. Default 15.
+        """
+        if not 1 <= max_vertices <= 10000:
+            raise ValueError("max_vertices must be between 1 and 10000")
+        return client.get_route_coverage_geojson(
+            lat=lat,
+            lon=lon,
+            width=width,
+            height=height,
+            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
+            workout_type=workout_type,
+            max_vertices=max_vertices,
+            tolerance_m=tolerance_m,
+        )
+
     # -------------------------------------------------------------------------
     # Raw exports
     # -------------------------------------------------------------------------

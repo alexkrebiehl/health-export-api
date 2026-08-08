@@ -97,6 +97,8 @@ Apple Health workout sessions (Outdoor Walk, Outdoor Cycling, Paddle Sports, etc
 |---|---|---|
 | `GET` | `/v1/workouts/types` | List distinct workout types with session counts. |
 | `GET` | `/v1/workouts/summary` | Aggregate workout sessions over a date range. |
+| `GET` | `/v1/workouts/{workout_id}/route` | GPS route points for a single workout. |
+| `GET` | `/v1/workouts/routes/geojson` | GeoJSON coverage map of every route inside a geographic box. |
 
 **`GET /v1/workouts/types` parameters:**
 
@@ -126,6 +128,65 @@ Each series entry:
   "avg_heart_rate": 104.8
 }
 ```
+
+**`GET /v1/workouts/{workout_id}/route` parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `max_points` | no | Cap on route points returned, 1–10000. Omit for the whole route. |
+
+Returns workout metadata plus a `route_points` array of `{index, timestamp, latitude, longitude, altitude, horizontal_accuracy, vertical_accuracy, speed, speed_accuracy, course, course_accuracy}`. Workouts recorded without GPS return `"has_route": false` and an empty array.
+
+#### Route coverage map
+
+`GET /v1/workouts/routes/geojson` merges *all* matching routes inside a box into a single set of paths — a "which streets have I covered?" view rather than one line per session. Paths closer together than `tolerance_m` collapse into one, so the two sides of a street, or a route walked in both directions, count once and carry a traversal `count`.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `lat` / `lon` | yes | Centre of the box. |
+| `width` / `height` | yes | Box size **in metres**, e.g. `2000` for a 2 km span. |
+| `date_range` | no | Same syntax as health summary. Omit for all time. |
+| `start_date` / `end_date` | no | ISO-8601 alternative to `date_range`. |
+| `workout_type` | no | Repeatable, e.g. `?workout_type=Outdoor+Walk&workout_type=Outdoor+Run`. Omit for all types. |
+| `max_vertices` | no | Ceiling on coordinates returned, 100–200000. Default `50000`. |
+| `tolerance_m` | no | Merge distance in metres, 1–1000. Default `15` — roughly a street width. |
+
+The result is a GeoJSON `FeatureCollection` that can be dropped straight into a map renderer:
+
+```json
+{
+  "type": "FeatureCollection",
+  "bbox": [13.385237, 52.511017, 13.414763, 52.528983],
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {"type": "LineString", "coordinates": [[13.399941, 52.519943], [13.400163, 52.519943]]},
+      "properties": {
+        "count": 7,
+        "workout_types": ["Outdoor Walk"],
+        "first_seen": "2025-01-04",
+        "last_seen": "2026-07-30"
+      }
+    }
+  ],
+  "properties": {
+    "tolerance_m": 15.0,
+    "vertex_count": 12043,
+    "feature_count": 812,
+    "workout_count": 96,
+    "start_date": null,
+    "end_date": null,
+    "workout_types": null
+  }
+}
+```
+
+Notes:
+
+- `count` is how many *sessions* used that path, so it can be used to weight or colour lines by frequency. Pacing back and forth within one session still counts once.
+- Timeframe filtering is on the workout's **start date**, not on individual point timestamps.
+- If the result would exceed `max_vertices`, `tolerance_m` is raised automatically until it fits; the value actually used is reported in the top-level `properties`. A box that is large *and* densely covered therefore comes back at a coarser resolution than requested.
+- A box spanning a pole or the ±180° meridian is clamped, not wrapped.
 
 > ⚠️ **Hevy double-count warning:** Hevy writes completed workouts back to HealthKit as `Traditional Strength Training`. Apple Health metrics like `active_energy` and `apple_exercise_time` already include those sessions. Do not add Apple Health exercise totals to Hevy session totals — they overlap. Use the Hevy MCP tools for structured strength-session detail.
 
@@ -188,6 +249,8 @@ Hermes filters environment variables passed to stdio MCP servers, so the two var
 | `get_metric_summary` | Aggregate a health metric over a date range (`metric`, `granularity`, `date_range` or `start_date`/`end_date`). |
 | `list_workout_types` | List distinct Apple Health workout types with session counts (`include_hevy`). |
 | `get_workout_summary` | Aggregate workout sessions (`workout_type`, `granularity`, `date_range`, `include_hevy`). |
+| `get_workout_route` | GPS route points for one workout (`workout_id`, `max_points`). |
+| `get_route_coverage_geojson` | GeoJSON coverage map of all routes in a box (`lat`, `lon`, `width`, `height` in metres, `date_range`, `workout_type`, `max_vertices`, `tolerance_m`). |
 | `list_exports` | List raw stored export records, newest first (`limit` 1–100). |
 
 ## Run locally with Docker Compose
