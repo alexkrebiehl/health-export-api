@@ -233,6 +233,34 @@ def test_attribution_is_on_by_default_and_survives_being_hidden(
         assert "OpenStreetMap" in html and "CARTO" in html
 
 
+def test_weight_scales_with_count_unless_pinned(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    default = client.get(
+        "/v1/workouts/routes/map", params={**BOX, "map_token": MAP_TOKEN}
+    ).text
+    pinned = client.get(
+        "/v1/workouts/routes/map",
+        params={**BOX, "map_token": MAP_TOKEN, "weight": 3.5},
+    ).text
+
+    assert "var fixedWeight = null;" in default
+    assert "var fixedWeight = 3.5;" in pinned
+    # Colour still carries frequency in both cases.
+    assert "color: colour(t)" in default and "color: colour(t)" in pinned
+
+
+def test_weight_must_be_a_sensible_stroke_width(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    for bad in (0, -2, 25):
+        response = client.get(
+            "/v1/workouts/routes/map",
+            params={**BOX, "map_token": MAP_TOKEN, "weight": bad},
+        )
+        assert response.status_code == 422, f"weight={bad} should be rejected"
+
+
 def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest(client, name="</script><script>alert(1)</script>")

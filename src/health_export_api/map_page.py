@@ -86,6 +86,13 @@ _TEMPLATE = Template("""<!doctype html>
   var denom = Math.log(max) || 1;
   function level(c) { return Math.log(Math.max(1, c)) / denom; }
 
+  // null unless the caller pinned a weight, in which case every line draws at
+  // the same thickness and frequency is carried by colour alone.
+  var fixedWeight = $weight;
+  function strokeWeight(t) {
+    return fixedWeight === null ? 1.2 + t * 4 : fixedWeight;
+  }
+
   // Least-travelled first so the routes that matter draw on top.
   var drawn = [];
   feats.slice().sort(function (a, b) {
@@ -93,7 +100,7 @@ _TEMPLATE = Template("""<!doctype html>
   }).forEach(function (f) {
     var t = level(f.properties.count || 1);
     var layer = L.geoJSON(f, {
-      style: { color: colour(t), weight: 1.2 + t * 4, opacity: 0.9, lineCap: 'round' }
+      style: { color: colour(t), weight: strokeWeight(t), opacity: 0.9, lineCap: 'round' }
     }).bindTooltip(
       f.properties.count + '&times; &middot; ' +
       (f.properties.workout_types || []).join(', ') + '<br>' +
@@ -146,6 +153,7 @@ def render_map_page(
     refresh_minutes: int = 30,
     zoom_control: bool = False,
     attribution: bool = True,
+    weight: float | None = None,
 ) -> str:
     """Render a coverage FeatureCollection as a standalone Leaflet page.
 
@@ -156,6 +164,10 @@ def render_map_page(
     CARTO both require credit for their data and tiles, so turning it off is a
     deliberate choice for the caller to make, not a default. The credit stays
     in an HTML comment either way.
+
+    ``weight`` pins every line to one stroke width. Left unset, width scales
+    with traversal count alongside colour; set, frequency is carried by colour
+    alone, which reads more evenly when the map is mostly one kind of route.
     """
     # `<` only ever appears inside JSON strings, so escaping it keeps the
     # document valid while making it impossible for a workout name to close
@@ -170,4 +182,5 @@ def render_map_page(
         refresh_ms=refresh_minutes * 60_000,
         zoom_control="true" if zoom_control else "false",
         attribution="true" if attribution else "false",
+        weight="null" if weight is None else repr(float(weight)),
     )

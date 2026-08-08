@@ -202,6 +202,7 @@ Notes:
 | `refresh_minutes` | `30` | How often the page reloads itself to pick up new workouts. |
 | `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Off by default — scroll and pinch zoom still work. |
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
+| `weight` | unset | Pin every line to this stroke width (0–20). Unset, width scales with traversal count; set, frequency is carried by colour alone. |
 
 > **Attribution.** OpenStreetMap and CARTO both require credit for their data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish.
 

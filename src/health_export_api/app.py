@@ -305,6 +305,7 @@ def create_app(
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
         zoom_control: bool = Query(default=False),
         attribution: bool = Query(default=True),
+        weight: float | None = Query(default=None, gt=0, le=20),
         map_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
@@ -329,6 +330,7 @@ def create_app(
                 refresh_minutes=refresh_minutes,
                 zoom_control=zoom_control,
                 attribution=attribution,
+                weight=weight,
             )
         )
 
