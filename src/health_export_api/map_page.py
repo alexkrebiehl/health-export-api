@@ -45,6 +45,9 @@ _TEMPLATE = Template("""<!doctype html>
 </style>
 </head>
 <body>
+<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap contributors.
+     https://www.openstreetmap.org/copyright https://carto.com/attributions
+     Kept here so the credit survives even when the on-map control is hidden. -->
 <div id="map"></div>
 <script type="application/json" id="coverage">$data</script>
 <script src="/static/leaflet.js"></script>
@@ -54,7 +57,9 @@ _TEMPLATE = Template("""<!doctype html>
   var meta = fc.properties || {};
   var feats = fc.features || [];
 
-  var map = L.map('map', { zoomControl: true, attributionControl: true });
+  // Chrome-free by default: this is a dashboard tile, not an interactive map.
+  // Scroll/pinch zoom still works without the +/- buttons.
+  var map = L.map('map', { zoomControl: $zoom_control, attributionControl: $attribution });
   var dark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
   L.tileLayer(
     'https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') +
@@ -139,8 +144,19 @@ def render_map_page(
     *,
     title: str = "Exercise coverage",
     refresh_minutes: int = 30,
+    zoom_control: bool = False,
+    attribution: bool = True,
 ) -> str:
-    """Render a coverage FeatureCollection as a standalone Leaflet page."""
+    """Render a coverage FeatureCollection as a standalone Leaflet page.
+
+    ``zoom_control`` is off by default: this is a dashboard tile, and scroll
+    and pinch zoom still work without the buttons.
+
+    ``attribution`` is on by default and should stay on. OpenStreetMap and
+    CARTO both require credit for their data and tiles, so turning it off is a
+    deliberate choice for the caller to make, not a default. The credit stays
+    in an HTML comment either way.
+    """
     # `<` only ever appears inside JSON strings, so escaping it keeps the
     # document valid while making it impossible for a workout name to close
     # the <script> block early.
@@ -152,4 +168,6 @@ def render_map_page(
         ramp=json.dumps([list(c) for c in _RAMP]),
         gradient=gradient,
         refresh_ms=refresh_minutes * 60_000,
+        zoom_control="true" if zoom_control else "false",
+        attribution="true" if attribution else "false",
     )

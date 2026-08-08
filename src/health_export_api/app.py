@@ -303,6 +303,8 @@ def create_app(
         tolerance_m: float = Query(default=15.0, ge=1, le=1000),
         min_count: int = Query(default=1, ge=1, le=1000),
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
+        zoom_control: bool = Query(default=False),
+        attribution: bool = Query(default=True),
         map_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
@@ -322,7 +324,12 @@ def create_app(
             min_count=min_count,
         )
         return HTMLResponse(
-            render_map_page(collection, refresh_minutes=refresh_minutes)
+            render_map_page(
+                collection,
+                refresh_minutes=refresh_minutes,
+                zoom_control=zoom_control,
+                attribution=attribution,
+            )
         )
 
     @app.get("/v1/workouts/{workout_id}/route")

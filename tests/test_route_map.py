@@ -198,6 +198,41 @@ def test_refresh_interval_is_configurable(tmp_path: Path) -> None:
     assert "300000" in html
 
 
+def test_zoom_control_is_off_by_default_and_can_be_turned_on(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    default = client.get(
+        "/v1/workouts/routes/map", params={**BOX, "map_token": MAP_TOKEN}
+    ).text
+    enabled = client.get(
+        "/v1/workouts/routes/map",
+        params={**BOX, "map_token": MAP_TOKEN, "zoom_control": "true"},
+    ).text
+
+    assert "zoomControl: false" in default
+    assert "zoomControl: true" in enabled
+
+
+def test_attribution_is_on_by_default_and_survives_being_hidden(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    default = client.get(
+        "/v1/workouts/routes/map", params={**BOX, "map_token": MAP_TOKEN}
+    ).text
+    hidden = client.get(
+        "/v1/workouts/routes/map",
+        params={**BOX, "map_token": MAP_TOKEN, "attribution": "false"},
+    ).text
+
+    assert "attributionControl: true" in default
+    assert "attributionControl: false" in hidden
+    # OSM and CARTO require credit; it stays in the source either way.
+    for html in (default, hidden):
+        assert "OpenStreetMap" in html and "CARTO" in html
+
+
 def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest(client, name="</script><script>alert(1)</script>")

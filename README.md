@@ -195,7 +195,15 @@ Notes:
 
 #### Rendered map page
 
-`GET /v1/workouts/routes/map` returns the same coverage as a self-contained Leaflet page — built for a Home Assistant **Webpage (`iframe`) card**, but usable in any dashboard that embeds a URL. It accepts every parameter the GeoJSON endpoint does, so the URL is the tuning surface, plus `refresh_minutes` (default `30`) controlling how often the page reloads itself.
+`GET /v1/workouts/routes/map` returns the same coverage as a self-contained Leaflet page — built for a Home Assistant **Webpage (`iframe`) card**, but usable in any dashboard that embeds a URL. It accepts every parameter the GeoJSON endpoint does, so the URL is the tuning surface, plus:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `refresh_minutes` | `30` | How often the page reloads itself to pick up new workouts. |
+| `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Off by default — scroll and pinch zoom still work. |
+| `attribution` | `true` | Show the map credit. See the note below before turning this off. |
+
+> **Attribution.** OpenStreetMap and CARTO both require credit for their data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish.
 
 The GeoJSON is embedded in the document rather than fetched, so the page is a single request. Leaflet is served same-origin from `/static`; the only outbound dependency is the CARTO basemap tiles (OpenStreetMap data). Lines are coloured and weighted by traversal `count` on a log scale, and the view fits the routes rather than the query box — the box is a filter and is usually much larger than the area actually walked.
 
