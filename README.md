@@ -281,12 +281,16 @@ grid_options: {columns: full, rows: 6}
 | `window` | `7` | Days per half, for `change` |
 | `label` | `Current` / `Weekly trend` | Tile label, sentence case |
 | `good_direction` | `none` | `up`, `down`, or `none` — see below |
+| `margin` | `0` | Extra space around the contents, as a **percent of the tile** (0–20). |
+| `align` | `left` | `left`, `center`, or `right`. |
 | `refresh_minutes` | `30` | How often the page reloads itself |
 | `embed_token` | — | Same token as the other embedded pages |
 
 `change` compares **two adjacent windows of equal length in calendar days** — `[t-6, t]` against `[t-13, t-7]` at the default. Equal spans matter: unequal ones weight the two means differently and bias the comparison. It renders an empty state rather than a number when either window has no readings.
 
 `good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
+
+`margin` is a **percentage of the tile rather than pixels**, because the tile is rendered anywhere from ~240px to ~560px wide and a fixed pixel margin would swallow a small one and disappear in a large one. It is *additive*, so `0` renders exactly as it would with the parameter absent. Raising it shrinks the text budgets to match — the type scales down as the padding grows, instead of overflowing.
 
 ```yaml
 type: iframe

@@ -1,4 +1,5 @@
 """Tests for the stat tiles and their window maths."""
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,80 @@ def test_change_tile_colours_only_the_direction_declared_good() -> None:
     assert "↑" in gaining  # direction still readable without colour
 
 
+def _value_sizes(html: str) -> tuple[float, float]:
+    """The value rule's (height, width) budgets.
+
+    Anchored on `.value{` — the `.label` rule has the same shape and comes
+    first in the stylesheet, so an unanchored search reads the wrong one.
+    """
+    m = re.search(r"\.value\{[^}]*font-size:min\(([\d.]+)cqh,([\d.]+)cqw\)",
+                  html, re.S)
+    return float(m.group(1)), float(m.group(2))
+
+
+def _budget(html: str) -> float:
+    return _value_sizes(html)[1]
+
+
+def _padding(html: str) -> tuple[float, float]:
+    m = re.search(r"padding:([\d.]+)cqh ([\d.]+)cqw", html)
+    return float(m.group(1)), float(m.group(2))
+
+
+def test_margin_defaults_to_no_change() -> None:
+    plain = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY)
+    zero = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
+                              margin=0)
+
+    assert plain == zero
+    assert _padding(plain) == (3.0, 4.0)
+
+
+def test_a_margin_widens_padding_and_narrows_the_budget() -> None:
+    """The coupling: padding and the text budget must move together.
+
+    Growing the padding without shrinking the budget would push the text
+    straight out of the tile, which is the whole hazard of this parameter.
+    """
+    tight = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY)
+    roomy = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
+                               margin=8)
+
+    assert _padding(roomy) == (11.0, 12.0)
+    assert _budget(roomy) < _budget(tight)
+
+    # And the height budget shrinks too, so the column still fits vertically.
+    assert _value_sizes(roomy)[0] == _value_sizes(tight)[0] - 16.0
+
+
+def test_margin_is_clamped_so_the_budget_stays_positive() -> None:
+    html = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
+                              margin=999)
+
+    assert _budget(html) > 0
+    assert _padding(html) == (23.0, 24.0)
+
+
+def test_alignment_defaults_to_left_and_can_be_centred() -> None:
+    left = render_latest_tile((d("2026-07-12"), 191.4), today=TODAY)
+    centre = render_latest_tile((d("2026-07-12"), 191.4), today=TODAY,
+                                align="center")
+    right = render_latest_tile((d("2026-07-12"), 191.4), today=TODAY,
+                               align="right")
+
+    assert "align-items:flex-start;text-align:left" in left
+    assert "align-items:center;text-align:center" in centre
+    assert "align-items:flex-end;text-align:right" in right
+
+
+def test_margin_and_alignment_reach_the_change_tile_too() -> None:
+    html = render_change_tile((191.0, 193.0, -2.0), unit="lb", margin=6,
+                              align="center")
+
+    assert _padding(html) == (9.0, 10.0)
+    assert "text-align:center" in html
+
+
 def test_tiles_render_an_empty_state_rather_than_failing() -> None:
     assert "No readings yet" in render_latest_tile(None)
     assert "Not enough readings" in render_change_tile(None, window_days=7)
@@ -215,3 +290,16 @@ def test_bad_parameters_are_rejected(tmp_path: Path) -> None:
     assert stat(client, stat="sideways").status_code == 422
     assert stat(client, good_direction="left").status_code == 422
     assert stat(client, window=0).status_code == 422
+    assert stat(client, align="middle").status_code == 422
+    assert stat(client, margin=-1).status_code == 422
+    assert stat(client, margin=50).status_code == 422
+
+
+def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest_weight(client, {"2026-07-12": 191.4})
+
+    html = stat(client, margin=10, align="center").text
+
+    assert "padding:13.0cqh 14.0cqw" in html
+    assert "align-items:center;text-align:center" in html

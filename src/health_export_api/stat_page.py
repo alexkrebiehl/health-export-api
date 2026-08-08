@@ -50,13 +50,14 @@ $palette
      wins, and the text neither overflows nor leaves the tile half empty. */
   body{container-type:size}
   #tile{height:100%;display:flex;flex-direction:column;justify-content:center;
-        gap:1.5cqh;padding:3cqh 4cqw;box-sizing:border-box}
+        align-items:${align_items};text-align:${align};
+        gap:1.5cqh;padding:${pad_v}cqh ${pad_h}cqw;box-sizing:border-box}
   .label{color:var(--ink-2);font-size:min(14cqh,${label_cqw}cqw);line-height:1.15;
          letter-spacing:.01em;white-space:nowrap}
   /* Proportional figures on purpose: tabular-nums pads every digit to a zero's
      width, which looks gappy at display sizes. */
   .value{color:var(--ink);font-weight:600;line-height:1;
-         font-size:min(52cqh,${value_cqw}cqw);white-space:nowrap}
+         font-size:min(${value_cqh}cqh,${value_cqw}cqw);white-space:nowrap}
   .value .unit{font-size:.45em;font-weight:500;color:var(--ink-2);
                margin-left:.22em}
   .note{color:var(--muted);font-size:min(12cqh,${note_cqw}cqw);line-height:1.15;
@@ -84,8 +85,33 @@ _EM_WIDTHS = {" ": 0.26, ".": 0.28, ",": 0.28, "·": 0.32,
               "↓": 0.75, "↑": 0.75, "→": 0.85, "—": 1.0}
 _EM_DEFAULT = 0.58
 
-# Share of the tile's width each element may occupy. Padding is 4cqw a side.
-_WIDTH_BUDGET = {"value": 84.0, "label": 84.0, "note": 84.0}
+# Base padding, as a share of the tile, before any caller-supplied margin.
+_BASE_PAD_H = 4.0
+_BASE_PAD_V = 3.0
+
+# Slack left over after padding, so text never runs right up to the edge.
+_WIDTH_SLACK = 8.0
+
+# The value's share of the tile height at zero margin. Together with the label
+# (14), note (12), gaps (3) and padding (2x3) this leaves ~13 spare.
+_BASE_VALUE_CQH = 52.0
+
+# A margin bigger than this would leave nothing to typeset into.
+MAX_MARGIN = 20.0
+
+Align = Literal["left", "center", "right"]
+
+_ALIGN_ITEMS = {"left": "flex-start", "center": "center", "right": "flex-end"}
+
+
+def _width_budget(margin: float) -> float:
+    """Share of the tile's width the text may occupy at a given margin.
+
+    Derived rather than constant: the font sizes are the smaller of a width and
+    a height budget, so a margin that widened the padding without narrowing the
+    budget would push the text straight out of the tile.
+    """
+    return 100.0 - 2.0 * (_BASE_PAD_H + margin) - _WIDTH_SLACK
 
 
 def _em_width(text: str) -> float:
@@ -120,10 +146,13 @@ def render_latest_tile(
     label: str = "Current",
     refresh_minutes: int = 30,
     today: date | None = None,
+    margin: float = 0.0,
+    align: Align = "left",
 ) -> str:
     """Tile showing the most recent reading and how fresh it is."""
     if reading is None:
-        return _render(label, "—", "", "No readings yet", "", refresh_minutes)
+        return _render(label, "—", "", "No readings yet", "", refresh_minutes,
+                       margin, align)
 
     day, value = reading
     age = ((today or date.today()) - day).days
@@ -134,7 +163,8 @@ def render_latest_tile(
     else:
         note = f"{age} days ago"
     note += day.strftime(" · %-d %b")
-    return _render(label, _fmt(value), unit, note, "", refresh_minutes)
+    return _render(label, _fmt(value), unit, note, "", refresh_minutes,
+                   margin, align)
 
 
 def render_change_tile(
@@ -145,12 +175,14 @@ def render_change_tile(
     window_days: int = 7,
     good_direction: GoodDirection = "none",
     refresh_minutes: int = 30,
+    margin: float = 0.0,
+    align: Align = "left",
 ) -> str:
     """Tile showing a signed week-over-week change."""
     if change is None:
         return _render(label, "—", "",
                        f"Not enough readings for {window_days} days",
-                       "", refresh_minutes)
+                       "", refresh_minutes, margin, align)
 
     _, _, delta = change
     arrow = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
@@ -163,7 +195,7 @@ def render_change_tile(
     )
     tone = "good" if improving else ""
     return _render(label, value, unit, f"vs previous {window_days} days",
-                   tone, refresh_minutes)
+                   tone, refresh_minutes, margin, align)
 
 
 def _render(
@@ -173,11 +205,16 @@ def _render(
     note: str,
     tone: str,
     refresh_minutes: int,
+    margin: float = 0.0,
+    align: Align = "left",
 ) -> str:
     # The unit rides at 0.45em with a 0.22em gap, so it costs proportionally
     # less width than its character count suggests.
     value_em = _em_width(main) + (0.22 + _em_width(unit) * 0.45 if unit else 0.0)
     value_html = main + (f'<span class="unit">{unit}</span>' if unit else "")
+
+    margin = max(0.0, min(margin, MAX_MARGIN))
+    budget = _width_budget(margin)
 
     return _TEMPLATE.substitute(
         title=label,
@@ -185,10 +222,16 @@ def _render(
         value=value_html,
         note=note,
         tone=tone,
+        align=align,
+        align_items=_ALIGN_ITEMS[align],
+        pad_h=round(_BASE_PAD_H + margin, 2),
+        pad_v=round(_BASE_PAD_V + margin, 2),
+        # Both budgets shrink with the margin so the text keeps fitting.
+        value_cqh=round(_BASE_VALUE_CQH - 2.0 * margin, 2),
         # Caps stop a very short string ballooning past the height budget.
-        value_cqw=_cqw_from_em(value_em, _WIDTH_BUDGET["value"], cap=40.0),
-        label_cqw=_cqw_for(label, _WIDTH_BUDGET["label"], cap=9.0),
-        note_cqw=_cqw_for(note, _WIDTH_BUDGET["note"], cap=8.0),
+        value_cqw=_cqw_from_em(value_em, budget, cap=40.0),
+        label_cqw=_cqw_for(label, budget, cap=9.0),
+        note_cqw=_cqw_for(note, budget, cap=8.0),
         palette=PALETTE_CSS,
         font=FONT_STACK,
         refresh_ms=refresh_minutes * 60_000,

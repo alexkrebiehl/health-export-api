@@ -17,7 +17,11 @@ from health_export_api.chart_page import (
     render_chart_page,
     window_change,
 )
-from health_export_api.stat_page import render_change_tile, render_latest_tile
+from health_export_api.stat_page import (
+    MAX_MARGIN,
+    render_change_tile,
+    render_latest_tile,
+)
 from health_export_api.map_page import render_map_page
 from health_export_api.normalization import resolve_date_range
 from health_export_api.store import Store
@@ -245,6 +249,8 @@ def create_app(
         window: int = Query(default=7, ge=1, le=365),
         label: str | None = Query(default=None),
         good_direction: str = Query(default="none", pattern="^(up|down|none)$"),
+        margin: float = Query(default=0.0, ge=0, le=MAX_MARGIN),
+        align: str = Query(default="left", pattern="^(left|center|right)$"),
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
@@ -279,6 +285,8 @@ def create_app(
                     window_days=window,
                     good_direction=good_direction,  # type: ignore[arg-type]
                     refresh_minutes=refresh_minutes,
+                    margin=margin,
+                    align=align,  # type: ignore[arg-type]
                 )
             )
         return HTMLResponse(
@@ -288,6 +296,8 @@ def create_app(
                 label=label or "Current",
                 refresh_minutes=refresh_minutes,
                 today=today,
+                margin=margin,
+                align=align,  # type: ignore[arg-type]
             )
         )
 
