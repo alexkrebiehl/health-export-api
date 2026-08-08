@@ -33,6 +33,8 @@ from math import ceil, floor, log10
 from string import Template
 from typing import Any, Sequence
 
+from health_export_api.theme import FONT_STACK, PALETTE_CSS
+
 Point = tuple[date, float]
 
 # Gaps up to this many days are drawn through; beyond it the line breaks.
@@ -102,6 +104,40 @@ def rolling_trend(
     return out
 
 
+def window_change(
+    points: Sequence[Point], window_days: int, anchor: date
+) -> tuple[float, float, float] | None:
+    """Week-over-week change: mean of the recent window minus the one before.
+
+    Both windows are the same length in **calendar days** and adjacent, ending
+    at ``anchor``: ``[anchor-(w-1), anchor]`` against ``[anchor-(2w-1),
+    anchor-w]``. Equal spans matter — unequal ones would weight the two means
+    differently and bias the comparison.
+
+    Returns ``(recent_mean, prior_mean, delta)``, or ``None`` if either window
+    holds no readings, since a difference against nothing is not a number.
+    """
+    if window_days < 1:
+        return None
+    recent_from = anchor - timedelta(days=window_days - 1)
+    prior_from = anchor - timedelta(days=2 * window_days - 1)
+    prior_to = anchor - timedelta(days=window_days)
+
+    recent = [v for d, v in points if recent_from <= d <= anchor]
+    prior = [v for d, v in points if prior_from <= d <= prior_to]
+    if not recent or not prior:
+        return None
+
+    recent_mean = sum(recent) / len(recent)
+    prior_mean = sum(prior) / len(prior)
+    return recent_mean, prior_mean, recent_mean - prior_mean
+
+
+def latest_reading(points: Sequence[Point]) -> Point | None:
+    """The most recent reading, or None when there is nothing to report."""
+    return max(points, key=lambda p: p[0]) if points else None
+
+
 def split_on_gaps(
     points: Sequence[Point], max_gap_days: int = DEFAULT_MAX_GAP_DAYS
 ) -> list[list[Point]]:
@@ -142,7 +178,7 @@ def _nice_ticks(low: float, high: float, target: int = 4) -> list[float]:
 # ---------------------------------------------------------------------------
 
 
-def _parse(series: list[dict[str, Any]]) -> list[Point]:
+def parse_series(series: list[dict[str, Any]]) -> list[Point]:
     points: list[Point] = []
     for row in series:
         value = row.get("value")
@@ -168,25 +204,9 @@ _TEMPLATE = Template("""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>$title</title>
 <style>
-  :root{
-    color-scheme: light;
-    --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
-    --grid:#e1e0d9; --axis:#c3c2b7; --raw:#898781; --trend:#2a78d6;
-  }
-  @media (prefers-color-scheme: dark){
-    :root:not([data-theme="light"]){
-      color-scheme: dark;
-      --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
-      --grid:#2c2c2a; --axis:#383835; --raw:#898781; --trend:#3987e5;
-    }
-  }
-  :root[data-theme="dark"]{
-    color-scheme: dark;
-    --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
-    --grid:#2c2c2a; --axis:#383835; --raw:#898781; --trend:#3987e5;
-  }
+$palette
   html,body{margin:0;height:100%;background:var(--surface);
-    font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+    font:13px/1.4 $font;color:var(--ink)}
   /* Fit inside the frame in both axes: a card is not always the chart's
      aspect ratio, and height:auto overflows a short one. */
   #wrap{position:relative;width:100%;height:100%}
@@ -282,7 +302,7 @@ def render_chart_page(
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
 ) -> str:
     """Render a metric summary as a standalone SVG line chart page."""
-    points = _parse(summary.get("series") or [])
+    points = parse_series(summary.get("series") or [])
     unit = summary.get("unit") or ""
 
     if not points:
@@ -290,6 +310,7 @@ def render_chart_page(
         payload = {"points": [], "unit": unit, "window": window}
         return _TEMPLATE.substitute(
             title=title, body=body,
+            palette=PALETTE_CSS, font=FONT_STACK,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -367,7 +388,7 @@ def render_chart_page(
     }
 
     return _TEMPLATE.substitute(
-        title=title, body=body,
+        title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )

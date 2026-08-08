@@ -47,6 +47,7 @@ A stored record has this envelope:
 | `GET` | `/v1/health/metrics` | List all metric names and units available across stored exports. |
 | `GET` | `/v1/health/summary` | Aggregate a metric over a date range. |
 | `GET` | `/v1/health/chart` | A metric's daily series with a rolling trend line, rendered for embedding. |
+| `GET` | `/v1/health/stat` | A single stat tile — latest reading, or week-over-week change. |
 
 **`GET /v1/health/summary` parameters:**
 
@@ -267,6 +268,30 @@ The y axis is **zoomed to the data, never zero-based** — body weight moves a f
 type: iframe
 url: https://your-host/v1/health/chart?metric=weight_body_mass&date_range=last+90+days&window=7&embed_token=…
 grid_options: {columns: full, rows: 6}
+```
+
+### Stat tile
+
+`GET /v1/health/stat` renders one number — for the questions that are a figure rather than a plot.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `metric` | required | e.g. `weight_body_mass` |
+| `stat` | `latest` | `latest` (most recent reading) or `change` (week over week) |
+| `window` | `7` | Days per half, for `change` |
+| `label` | `Current` / `Weekly trend` | Tile label, sentence case |
+| `good_direction` | `none` | `up`, `down`, or `none` — see below |
+| `refresh_minutes` | `30` | How often the page reloads itself |
+| `embed_token` | — | Same token as the other embedded pages |
+
+`change` compares **two adjacent windows of equal length in calendar days** — `[t-6, t]` against `[t-13, t-7]` at the default. Equal spans matter: unequal ones weight the two means differently and bias the comparison. It renders an empty state rather than a number when either window has no readings.
+
+`good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
+
+```yaml
+type: iframe
+url: https://your-host/v1/health/stat?metric=weight_body_mass&stat=change&good_direction=down&embed_token=…
+grid_options: {columns: 4, rows: 3}
 ```
 
 > ⚠️ **Hevy double-count warning:** Hevy writes completed workouts back to HealthKit as `Traditional Strength Training`. Apple Health metrics like `active_energy` and `apple_exercise_time` already include those sessions. Do not add Apple Health exercise totals to Hevy session totals — they overlap. Use the Hevy MCP tools for structured strength-session detail.

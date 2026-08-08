@@ -3,7 +3,7 @@ import hmac
 import json
 import os
 import secrets
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from health_export_api.chart_page import render_chart_page
+from health_export_api.chart_page import (
+    latest_reading,
+    parse_series,
+    render_chart_page,
+    window_change,
+)
+from health_export_api.stat_page import render_change_tile, render_latest_tile
 from health_export_api.map_page import render_map_page
 from health_export_api.normalization import resolve_date_range
 from health_export_api.store import Store
@@ -229,6 +235,59 @@ def create_app(
                 title=title or metric.replace("_", " ").title(),
                 window=window,
                 refresh_minutes=refresh_minutes,
+            )
+        )
+
+    @app.get("/v1/health/stat", response_class=HTMLResponse)
+    def get_metric_stat(
+        metric: str,
+        stat: str = Query(default="latest", pattern="^(latest|change)$"),
+        window: int = Query(default=7, ge=1, le=365),
+        label: str | None = Query(default=None),
+        good_direction: str = Query(default="none", pattern="^(up|down|none)$"),
+        refresh_minutes: int = Query(default=30, ge=1, le=1440),
+        embed_token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> HTMLResponse:
+        """A single stat tile for a metric, for embedding beside the chart."""
+        authorize_embed(authorization, embed_token)
+        today = summary_today or date.today()
+
+        # Two adjacent windows of `window` days each, so the range covers both.
+        span_start = today - timedelta(days=2 * window - 1)
+
+        key = ("stat", metric, stat, window, span_start.isoformat(), today.isoformat())
+        summary = coverage_cache.get(key)
+        if summary is None:
+            summary = store.summarize_metric(
+                metric=metric,
+                start_date=span_start,
+                end_date=today,
+                granularity="day",
+            )
+            coverage_cache.put(key, summary)
+
+        points = parse_series(summary.get("series") or [])
+        unit = summary.get("unit") or ""
+
+        if stat == "change":
+            return HTMLResponse(
+                render_change_tile(
+                    window_change(points, window, today),
+                    unit=unit,
+                    label=label or "Weekly trend",
+                    window_days=window,
+                    good_direction=good_direction,  # type: ignore[arg-type]
+                    refresh_minutes=refresh_minutes,
+                )
+            )
+        return HTMLResponse(
+            render_latest_tile(
+                latest_reading(points),
+                unit=unit,
+                label=label or "Current",
+                refresh_minutes=refresh_minutes,
+                today=today,
             )
         )
 
