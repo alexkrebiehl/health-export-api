@@ -204,6 +204,17 @@ Notes:
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
 | `weight` | unset | Pin every line to this stroke width (0–20). Unset, width scales with traversal count; set, frequency is carried by colour alone. |
 
+#### Load shedding and caching
+
+Coverage rendering is pure Python and therefore GIL-bound, so concurrent requests are much *slower* than sequential ones — measured on a 4 km box, eight requests took 1.96 s one after another and 70.9 s all at once, burning 208 s of CPU for ~2 s of work. This matters because editing a dashboard card's URL fires one request per keystroke.
+
+Two mechanisms handle that:
+
+- **Requests are serialised.** One coverage render runs at a time. Beyond a queue depth of 10 the API returns **`429 Too Many Requests`** with a `Retry-After` header rather than letting the pile-up grow.
+- **Results are cached** for `HEALTH_EXPORT_CACHE_TTL` seconds (default `300`, set `0` to disable). The key is the *filters* — `lat`, `lon`, `width`, `height`, dates, `workout_type`, `max_vertices`, `tolerance_m`, `min_count` — and deliberately not the presentation options, so re-rendering the same area with a different `weight` or without the zoom control is instant. The cache is checked before queueing, so a repeat never waits behind a running render, and again after acquiring the turn, so a burst of identical requests computes once.
+
+Because the cache is keyed on filters, a fresh export will not appear on the map until the TTL lapses. Lower `HEALTH_EXPORT_CACHE_TTL` if that matters more than responsiveness.
+
 > **Attribution.** OpenStreetMap and CARTO both require credit for their data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish.
 
 The GeoJSON is embedded in the document rather than fetched, so the page is a single request. Leaflet is served same-origin from `/static`; the only outbound dependency is the CARTO basemap tiles (OpenStreetMap data). Lines are coloured and weighted by traversal `count` on a log scale, and the view fits the routes rather than the query box — the box is a filter and is usually much larger than the area actually walked.

@@ -14,6 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from health_export_api.map_page import render_map_page
 from health_export_api.normalization import resolve_date_range
 from health_export_api.store import Store
+from health_export_api.throttle import (
+    DEFAULT_CACHE_TTL_SECONDS,
+    DEFAULT_MAX_QUEUE,
+    QueueFull,
+    RequestGate,
+    TTLCache,
+)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -38,7 +45,11 @@ def derive_map_token(api_token: str) -> str:
 
 
 def create_app(
-    storage_dir: Path, api_token: str, summary_today: date | None = None
+    storage_dir: Path,
+    api_token: str,
+    summary_today: date | None = None,
+    cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
+    max_queue: int = DEFAULT_MAX_QUEUE,
 ) -> FastAPI:
     if not api_token:
         raise ValueError("api_token must not be empty")
@@ -55,6 +66,11 @@ def create_app(
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
     map_token = derive_map_token(api_token)
+
+    # Coverage rendering is GIL-bound, so concurrent requests are far slower
+    # than sequential ones. Serialise them and serve repeats from cache.
+    coverage_cache = TTLCache(ttl=cache_ttl)
+    coverage_gate = RequestGate(max_queue=max_queue)
 
     def authorize(authorization: str | None) -> None:
         if authorization != f"Bearer {api_token}":
@@ -237,18 +253,59 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
                 )
-        return store.route_coverage_geojson(
-            lat=lat,
-            lon=lon,
-            width=width,
-            height=height,
-            start_date=range_start,
-            end_date=range_end,
-            workout_types=workout_type,
-            max_vertices=max_vertices,
-            tolerance_m=tolerance_m,
-            min_count=min_count,
+
+        # Keyed on the filters that shape the geometry. Presentation options
+        # are deliberately absent, so restyling an area is a cache hit.
+        key = (
+            lat,
+            lon,
+            width,
+            height,
+            range_start.isoformat() if range_start else None,
+            range_end.isoformat() if range_end else None,
+            tuple(workout_type) if workout_type else None,
+            max_vertices,
+            tolerance_m,
+            min_count,
         )
+
+        # Checked before queueing, so a cached answer never waits behind a
+        # computation that is already running.
+        hit = coverage_cache.get(key)
+        if hit is not None:
+            return hit
+
+        try:
+            with coverage_gate.enter():
+                # Re-check: an identical request may have finished while this
+                # one was waiting its turn, which is the common case when a
+                # URL edit fires a request per keystroke.
+                hit = coverage_cache.get(key)
+                if hit is not None:
+                    return hit
+                result = store.route_coverage_geojson(
+                    lat=lat,
+                    lon=lon,
+                    width=width,
+                    height=height,
+                    start_date=range_start,
+                    end_date=range_end,
+                    workout_types=workout_type,
+                    max_vertices=max_vertices,
+                    tolerance_m=tolerance_m,
+                    min_count=min_count,
+                )
+                coverage_cache.put(key, result)
+                return result
+        except QueueFull:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "Too many coverage requests queued. Rendering is "
+                    "serialised because it is CPU-bound; retry shortly."
+                ),
+                headers={"Retry-After": "5"},
+            )
 
     @app.get("/v1/map-token")
     def get_map_token(
@@ -361,7 +418,17 @@ def create_app_from_env() -> FastAPI:
     api_token = os.environ.get("HEALTH_EXPORT_API_TOKEN")
     if not api_token:
         raise RuntimeError("HEALTH_EXPORT_API_TOKEN must be configured")
+
+    raw_ttl = os.environ.get("HEALTH_EXPORT_CACHE_TTL")
+    try:
+        cache_ttl = DEFAULT_CACHE_TTL_SECONDS if raw_ttl is None else float(raw_ttl)
+    except ValueError:
+        raise RuntimeError(
+            f"HEALTH_EXPORT_CACHE_TTL must be a number of seconds, got {raw_ttl!r}"
+        )
+
     return create_app(
         storage_dir=Path(os.environ.get("HEALTH_EXPORT_STORAGE_DIR", "/data/exports")),
         api_token=api_token,
+        cache_ttl=cache_ttl,
     )
