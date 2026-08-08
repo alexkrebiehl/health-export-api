@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -6,13 +8,33 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
+from health_export_api.map_page import render_map_page
 from health_export_api.normalization import resolve_date_range
 from health_export_api.store import Store
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def derive_map_token(api_token: str) -> str:
+    """A second, read-only token for the map page.
+
+    The Home Assistant Webpage card cannot send an Authorization header, so the
+    credential has to travel in the URL — where it ends up in the dashboard
+    config and browser history. Putting the real token there would expose
+    ingestion rights, so the map page gets its own, derived one:
+
+    * nothing new to provision, and it cannot be reversed to the API token;
+    * leaking it exposes the coverage map and nothing else;
+    * rotating HEALTH_EXPORT_API_TOKEN rotates it too.
+    """
+    return hmac.new(api_token.encode(), b"route-map", hashlib.sha256).hexdigest()[:32]
 
 
 def create_app(
@@ -26,7 +48,13 @@ def create_app(
     store = Store(db_path)
     store.backfill(storage_dir)
 
-    app = FastAPI(title="Health Export API", version="0.4.0")
+    app = FastAPI(title="Health Export API", version="0.5.0")
+
+    # Stock Leaflet, served same-origin so the map page has no CDN dependency.
+    # Unauthenticated: it is open-source library code, not user data.
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+    map_token = derive_map_token(api_token)
 
     def authorize(authorization: str | None) -> None:
         if authorization != f"Bearer {api_token}":
@@ -35,6 +63,12 @@ def create_app(
                 detail="Missing or invalid bearer token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    def authorize_map(authorization: str | None, supplied: str | None) -> None:
+        """Accept either the full bearer token or the derived map token."""
+        if supplied is not None and secrets.compare_digest(supplied, map_token):
+            return
+        authorize(authorization)
 
     # -------------------------------------------------------------------------
     # Health check
@@ -173,23 +207,21 @@ def create_app(
             include_hevy=include_hevy,
         )
 
-    # Declared ahead of /{workout_id}/route so the literal path wins the match.
-    @app.get("/v1/workouts/routes/geojson")
-    def get_route_coverage_geojson(
-        lat: float = Query(default=..., ge=-90, le=90),
-        lon: float = Query(default=..., ge=-180, le=180),
-        width: float = Query(default=..., gt=0),
-        height: float = Query(default=..., gt=0),
-        date_range: str | None = Query(default=None),
-        start_date: str | None = Query(default=None),
-        end_date: str | None = Query(default=None),
-        workout_type: list[str] | None = Query(default=None),
-        max_vertices: int = Query(default=50_000, ge=100, le=200_000),
-        tolerance_m: float = Query(default=15.0, ge=1, le=1000),
-        min_count: int = Query(default=1, ge=1, le=1000),
-        authorization: str | None = Header(default=None),
+    def _coverage(
+        *,
+        lat: float,
+        lon: float,
+        width: float,
+        height: float,
+        date_range: str | None,
+        start_date: str | None,
+        end_date: str | None,
+        workout_type: list[str] | None,
+        max_vertices: int,
+        tolerance_m: float,
+        min_count: int,
     ) -> dict[str, Any]:
-        authorize(authorization)
+        """Shared by the GeoJSON and map routes, which take the same filters."""
         # The timeframe is optional here, unlike the summary endpoints, so only
         # resolve a range when the caller actually asked for one.
         range_start = range_end = None
@@ -216,6 +248,81 @@ def create_app(
             max_vertices=max_vertices,
             tolerance_m=tolerance_m,
             min_count=min_count,
+        )
+
+    @app.get("/v1/map-token")
+    def get_map_token(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        """The derived map-page token. Requires the real bearer token."""
+        authorize(authorization)
+        return {"map_token": map_token}
+
+    # Declared ahead of /{workout_id}/route so the literal path wins the match.
+    @app.get("/v1/workouts/routes/geojson")
+    def get_route_coverage_geojson(
+        lat: float = Query(default=..., ge=-90, le=90),
+        lon: float = Query(default=..., ge=-180, le=180),
+        width: float = Query(default=..., gt=0),
+        height: float = Query(default=..., gt=0),
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        workout_type: list[str] | None = Query(default=None),
+        max_vertices: int = Query(default=50_000, ge=100, le=200_000),
+        tolerance_m: float = Query(default=15.0, ge=1, le=1000),
+        min_count: int = Query(default=1, ge=1, le=1000),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        return _coverage(
+            lat=lat,
+            lon=lon,
+            width=width,
+            height=height,
+            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
+            workout_type=workout_type,
+            max_vertices=max_vertices,
+            tolerance_m=tolerance_m,
+            min_count=min_count,
+        )
+
+    @app.get("/v1/workouts/routes/map", response_class=HTMLResponse)
+    def get_route_coverage_map(
+        lat: float = Query(default=..., ge=-90, le=90),
+        lon: float = Query(default=..., ge=-180, le=180),
+        width: float = Query(default=..., gt=0),
+        height: float = Query(default=..., gt=0),
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        workout_type: list[str] | None = Query(default=None),
+        max_vertices: int = Query(default=50_000, ge=100, le=200_000),
+        tolerance_m: float = Query(default=15.0, ge=1, le=1000),
+        min_count: int = Query(default=1, ge=1, le=1000),
+        refresh_minutes: int = Query(default=30, ge=1, le=1440),
+        map_token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> HTMLResponse:
+        """Rendered coverage map, for embedding in a Home Assistant iframe."""
+        authorize_map(authorization, map_token)
+        collection = _coverage(
+            lat=lat,
+            lon=lon,
+            width=width,
+            height=height,
+            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
+            workout_type=workout_type,
+            max_vertices=max_vertices,
+            tolerance_m=tolerance_m,
+            min_count=min_count,
+        )
+        return HTMLResponse(
+            render_map_page(collection, refresh_minutes=refresh_minutes)
         )
 
     @app.get("/v1/workouts/{workout_id}/route")

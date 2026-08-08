@@ -99,6 +99,8 @@ Apple Health workout sessions (Outdoor Walk, Outdoor Cycling, Paddle Sports, etc
 | `GET` | `/v1/workouts/summary` | Aggregate workout sessions over a date range. |
 | `GET` | `/v1/workouts/{workout_id}/route` | GPS route points for a single workout. |
 | `GET` | `/v1/workouts/routes/geojson` | GeoJSON coverage map of every route inside a geographic box. |
+| `GET` | `/v1/workouts/routes/map` | The same coverage rendered as a Leaflet page, for embedding in a dashboard. |
+| `GET` | `/v1/map-token` | The derived read-only token that unlocks the map page. |
 
 **`GET /v1/workouts/types` parameters:**
 
@@ -190,6 +192,34 @@ Notes:
 - Timeframe filtering is on the workout's **start date**, not on individual point timestamps.
 - If the result would exceed `max_vertices`, `tolerance_m` is raised automatically until it fits; the value actually used is reported in the top-level `properties`. A box that is large *and* densely covered therefore comes back at a coarser resolution than requested.
 - A box spanning a pole or the ±180° meridian is clamped, not wrapped.
+
+#### Rendered map page
+
+`GET /v1/workouts/routes/map` returns the same coverage as a self-contained Leaflet page — built for a Home Assistant **Webpage (`iframe`) card**, but usable in any dashboard that embeds a URL. It accepts every parameter the GeoJSON endpoint does, so the URL is the tuning surface, plus `refresh_minutes` (default `30`) controlling how often the page reloads itself.
+
+The GeoJSON is embedded in the document rather than fetched, so the page is a single request. Leaflet is served same-origin from `/static`; the only outbound dependency is the CARTO basemap tiles (OpenStreetMap data). Lines are coloured and weighted by traversal `count` on a log scale, and the view fits the routes rather than the query box — the box is a filter and is usually much larger than the area actually walked.
+
+**Authentication.** An iframe cannot send an `Authorization` header, so the map page also accepts a token in the query string. That token is *not* `HEALTH_EXPORT_API_TOKEN` — putting the real token in a dashboard config and browser history would expose ingestion rights. Instead a second, read-only token is derived at startup:
+
+```
+map_token = HMAC-SHA256(HEALTH_EXPORT_API_TOKEN, "route-map")[:32]
+```
+
+It cannot be reversed to the API token, leaking it exposes the coverage map and nothing else, and rotating the API token rotates it too. Fetch it once with the real bearer token:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://your-host/v1/map-token
+```
+
+Then embed:
+
+```yaml
+type: iframe
+url: https://your-host/v1/workouts/routes/map?lat=52.52&lon=13.40&width=4000&height=4000&min_count=3&map_token=…
+aspect_ratio: 100%
+```
+
+Every other endpoint still requires the real bearer token; `map_token` unlocks only this page.
 
 > ⚠️ **Hevy double-count warning:** Hevy writes completed workouts back to HealthKit as `Traditional Strength Training`. Apple Health metrics like `active_energy` and `apple_exercise_time` already include those sessions. Do not add Apple Health exercise totals to Hevy session totals — they overlap. Use the Hevy MCP tools for structured strength-session detail.
 
