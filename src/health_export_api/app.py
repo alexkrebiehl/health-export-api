@@ -484,6 +484,7 @@ def create_app(
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
         zoom_control: bool = Query(default=False),
         attribution: bool = Query(default=True),
+        interactive: bool = Query(default=False),
         weight: float | None = Query(default=None, gt=0, le=20),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
@@ -509,6 +510,7 @@ def create_app(
                 refresh_minutes=refresh_minutes,
                 zoom_control=zoom_control,
                 attribution=attribution,
+                interactive=interactive,
                 weight=weight,
             )
         )

@@ -57,9 +57,16 @@ _TEMPLATE = Template("""<!doctype html>
   var meta = fc.properties || {};
   var feats = fc.features || [];
 
-  // Chrome-free by default: this is a dashboard tile, not an interactive map.
-  // Scroll/pinch zoom still works without the +/- buttons.
-  var map = L.map('map', { zoomControl: $zoom_control, attributionControl: $attribution });
+  // A dashboard tile is something you glance at, not something you drive, and
+  // a map that swallows scroll is actively annoying inside a scrolling
+  // dashboard. Every gesture is opt-in.
+  var interactive = $interactive;
+  var map = L.map('map', {
+    zoomControl: $zoom_control, attributionControl: $attribution,
+    dragging: interactive, scrollWheelZoom: interactive,
+    doubleClickZoom: interactive, touchZoom: interactive,
+    boxZoom: interactive, keyboard: interactive
+  });
   var dark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
   L.tileLayer(
     'https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') +
@@ -99,13 +106,19 @@ _TEMPLATE = Template("""<!doctype html>
     return (a.properties.count || 0) - (b.properties.count || 0);
   }).forEach(function (f) {
     var t = level(f.properties.count || 1);
+    // `interactive: false` also spares Leaflet wiring pointer handlers to
+    // every path — and there can be thousands of them at a fine tolerance.
     var layer = L.geoJSON(f, {
+      interactive: interactive,
       style: { color: colour(t), weight: strokeWeight(t), opacity: 0.9, lineCap: 'round' }
-    }).bindTooltip(
-      f.properties.count + '&times; &middot; ' +
-      (f.properties.workout_types || []).join(', ') + '<br>' +
-      f.properties.first_seen + ' &rarr; ' + f.properties.last_seen
-    );
+    });
+    if (interactive) {
+      layer.bindTooltip(
+        f.properties.count + '&times; &middot; ' +
+        (f.properties.workout_types || []).join(', ') + '<br>' +
+        f.properties.first_seen + ' &rarr; ' + f.properties.last_seen
+      );
+    }
     layer.addTo(map);
     drawn.push(layer);
   });
@@ -153,12 +166,20 @@ def render_map_page(
     refresh_minutes: int = 30,
     zoom_control: bool = False,
     attribution: bool = True,
+    interactive: bool = False,
     weight: float | None = None,
 ) -> str:
     """Render a coverage FeatureCollection as a standalone Leaflet page.
 
-    ``zoom_control`` is off by default: this is a dashboard tile, and scroll
-    and pinch zoom still work without the buttons.
+    ``zoom_control`` is off by default: this is a dashboard tile, not a map to
+    navigate. Turning it on without ``interactive`` gives buttons that work
+    while dragging still does not, which is a reasonable "look closer, but
+    stay put" combination.
+
+    ``interactive`` is off by default: panning, zooming and the per-path
+    tooltips are all disabled, so the tile cannot swallow a scroll gesture
+    inside a scrolling dashboard. It also skips wiring pointer handlers to
+    every path, which is not free when there are thousands.
 
     ``attribution`` is on by default and should stay on. OpenStreetMap and
     CARTO both require credit for their data and tiles, so turning it off is a
@@ -182,5 +203,6 @@ def render_map_page(
         refresh_ms=refresh_minutes * 60_000,
         zoom_control="true" if zoom_control else "false",
         attribution="true" if attribution else "false",
+        interactive="true" if interactive else "false",
         weight="null" if weight is None else repr(float(weight)),
     )

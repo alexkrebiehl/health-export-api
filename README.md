@@ -202,7 +202,8 @@ Notes:
 | Parameter | Default | Description |
 |---|---|---|
 | `refresh_minutes` | `30` | How often the page reloads itself to pick up new workouts. |
-| `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Off by default — scroll and pinch zoom still work. |
+| `interactive` | `false` | Panning, zooming and per-path tooltips. Off by default — see below. |
+| `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Independent of `interactive`. |
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
 | `weight` | unset | Pin every line to this stroke width (0–20). Unset, width scales with traversal count; set, frequency is carried by colour alone. |
 
@@ -216,6 +217,10 @@ Two mechanisms handle that:
 - **Results are cached** for `HEALTH_EXPORT_CACHE_TTL` seconds (default `300`, set `0` to disable). The key is the *filters* — `lat`, `lon`, `width`, `height`, dates, `workout_type`, `max_vertices`, `tolerance_m`, `min_count` — and deliberately not the presentation options, so re-rendering the same area with a different `weight` or without the zoom control is instant. The cache is checked before queueing, so a repeat never waits behind a running render, and again after acquiring the turn, so a burst of identical requests computes once.
 
 Because the cache is keyed on filters, a fresh export will not appear on the map until the TTL lapses. Lower `HEALTH_EXPORT_CACHE_TTL` if that matters more than responsiveness.
+
+**Interactivity is off by default.** A dashboard tile is something you glance at, not something you drive, and a map that captures the scroll wheel is actively hostile inside a scrolling dashboard. `interactive=false` disables dragging, wheel/double-click/pinch/box zoom, keyboard navigation, and the per-path tooltips. Set `interactive=true` to get all of it back.
+
+It is independent of `zoom_control`: buttons on with interactivity off is a usable "look closer, but stay put" combination. Turning interactivity off also skips binding a tooltip and pointer handlers to every path, which is not free when a fine `tolerance_m` produces thousands of them.
 
 > **Attribution.** OpenStreetMap and CARTO both require credit for their data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish.
 

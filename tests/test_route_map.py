@@ -261,6 +261,52 @@ def test_weight_must_be_a_sensible_stroke_width(tmp_path: Path) -> None:
         assert response.status_code == 422, f"weight={bad} should be rejected"
 
 
+def test_the_map_is_non_interactive_by_default(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+    ).text
+
+    assert "var interactive = false;" in html
+    # Every gesture is wired off the same flag, so none of them can be missed.
+    for option in ("dragging", "scrollWheelZoom", "doubleClickZoom",
+                   "touchZoom", "boxZoom", "keyboard"):
+        assert f"{option}: interactive" in html
+    # Paths take no pointer handlers and no tooltip when non-interactive.
+    assert "interactive: interactive" in html
+    assert "if (interactive) {" in html
+
+
+def test_interactivity_can_be_turned_on(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/workouts/routes/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "interactive": "true"},
+    ).text
+
+    assert "var interactive = true;" in html
+    # The tooltip content is always in the page; the binding is conditional.
+    assert "bindTooltip" in html
+
+
+def test_interactivity_is_independent_of_the_zoom_buttons(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/workouts/routes/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "zoom_control": "true"},
+    ).text
+
+    # Buttons on, dragging still off — "look closer, but stay put".
+    assert "zoomControl: true" in html
+    assert "var interactive = false;" in html
+
+
 def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest(client, name="</script><script>alert(1)</script>")
