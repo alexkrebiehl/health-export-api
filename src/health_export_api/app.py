@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from health_export_api.chart_page import render_chart_page
 from health_export_api.map_page import render_map_page
 from health_export_api.normalization import resolve_date_range
 from health_export_api.store import Store
@@ -29,19 +30,19 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def derive_map_token(api_token: str) -> str:
-    """A second, read-only token for the map page.
+def derive_embed_token(api_token: str) -> str:
+    """A second, read-only token for the embeddable pages.
 
     The Home Assistant Webpage card cannot send an Authorization header, so the
     credential has to travel in the URL — where it ends up in the dashboard
     config and browser history. Putting the real token there would expose
-    ingestion rights, so the map page gets its own, derived one:
+    ingestion rights, so the embedded pages get their own, derived one:
 
     * nothing new to provision, and it cannot be reversed to the API token;
-    * leaking it exposes the coverage map and nothing else;
+    * leaking it exposes the rendered dashboard pages and nothing else;
     * rotating HEALTH_EXPORT_API_TOKEN rotates it too.
     """
-    return hmac.new(api_token.encode(), b"route-map", hashlib.sha256).hexdigest()[:32]
+    return hmac.new(api_token.encode(), b"embed", hashlib.sha256).hexdigest()[:32]
 
 
 def create_app(
@@ -65,7 +66,7 @@ def create_app(
     # Unauthenticated: it is open-source library code, not user data.
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
-    map_token = derive_map_token(api_token)
+    embed_token = derive_embed_token(api_token)
 
     # Coverage rendering is GIL-bound, so concurrent requests are far slower
     # than sequential ones. Serialise them and serve repeats from cache.
@@ -80,9 +81,9 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    def authorize_map(authorization: str | None, supplied: str | None) -> None:
-        """Accept either the full bearer token or the derived map token."""
-        if supplied is not None and secrets.compare_digest(supplied, map_token):
+    def authorize_embed(authorization: str | None, supplied: str | None) -> None:
+        """Accept either the full bearer token or the derived embed token."""
+        if supplied is not None and secrets.compare_digest(supplied, embed_token):
             return
         authorize(authorization)
 
@@ -177,6 +178,58 @@ def create_app(
             start_date=range_start,
             end_date=range_end,
             granularity=granularity,
+        )
+
+    @app.get("/v1/health/chart", response_class=HTMLResponse)
+    def get_metric_chart(
+        metric: str,
+        date_range: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        window: int = Query(default=7, ge=0, le=365),
+        title: str | None = Query(default=None),
+        refresh_minutes: int = Query(default=30, ge=1, le=1440),
+        embed_token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> HTMLResponse:
+        """A metric's daily series with a moving average, for embedding."""
+        authorize_embed(authorization, embed_token)
+
+        # Unlike the summary endpoints the timeframe is optional here, so the
+        # card URL can stay short; three months is the useful default.
+        try:
+            range_start, range_end = resolve_date_range(
+                date_range=date_range or ("last 90 days" if not start_date else None),
+                start_date=start_date,
+                end_date=end_date,
+                today=summary_today or date.today(),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+            )
+
+        # Cached but deliberately not gated: this reads a handful of rows and
+        # is nothing like the GIL-bound coverage render, so queueing it behind
+        # one would be pure latency.
+        key = ("chart", metric, range_start.isoformat(), range_end.isoformat(), window)
+        summary = coverage_cache.get(key)
+        if summary is None:
+            summary = store.summarize_metric(
+                metric=metric,
+                start_date=range_start,
+                end_date=range_end,
+                granularity="day",
+            )
+            coverage_cache.put(key, summary)
+
+        return HTMLResponse(
+            render_chart_page(
+                summary,
+                title=title or metric.replace("_", " ").title(),
+                window=window,
+                refresh_minutes=refresh_minutes,
+            )
         )
 
     # -------------------------------------------------------------------------
@@ -307,13 +360,13 @@ def create_app(
                 headers={"Retry-After": "5"},
             )
 
-    @app.get("/v1/map-token")
-    def get_map_token(
+    @app.get("/v1/embed-token")
+    def get_embed_token(
         authorization: str | None = Header(default=None),
     ) -> dict[str, str]:
-        """The derived map-page token. Requires the real bearer token."""
+        """The derived embed token. Requires the real bearer token."""
         authorize(authorization)
-        return {"map_token": map_token}
+        return {"embed_token": embed_token}
 
     # Declared ahead of /{workout_id}/route so the literal path wins the match.
     @app.get("/v1/workouts/routes/geojson")
@@ -363,11 +416,11 @@ def create_app(
         zoom_control: bool = Query(default=False),
         attribution: bool = Query(default=True),
         weight: float | None = Query(default=None, gt=0, le=20),
-        map_token: str | None = Query(default=None),
+        embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
         """Rendered coverage map, for embedding in a Home Assistant iframe."""
-        authorize_map(authorization, map_token)
+        authorize_embed(authorization, embed_token)
         collection = _coverage(
             lat=lat,
             lon=lon,

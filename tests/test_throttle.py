@@ -8,11 +8,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from health_export_api.app import create_app, derive_map_token
+from health_export_api.app import create_app, derive_embed_token
 from health_export_api.throttle import QueueFull, RequestGate, TTLCache
 
 HEADERS = {"Authorization": "Bearer test-token"}
-MAP_TOKEN = derive_map_token("test-token")
+EMBED_TOKEN = derive_embed_token("test-token")
 
 CENTER_LAT = 52.5199425
 CENTER_LON = 13.3999414
@@ -208,7 +208,7 @@ def test_presentation_options_do_not_change_the_cache_key(tmp_path: Path) -> Non
     # weight/zoom_control only affect rendering, so the coverage behind the
     # map page should still be the cached one.
     html = client.get("/v1/workouts/routes/map",
-                      params={**BOX, "map_token": MAP_TOKEN, "weight": 4}).text
+                      params={**BOX, "embed_token": EMBED_TOKEN, "weight": 4}).text
 
     assert '"workout_count":1' in html.replace(" ", "")
 
@@ -237,7 +237,7 @@ def test_the_map_page_also_sheds_when_the_queue_is_full(tmp_path: Path) -> None:
     client = make_client(tmp_path, max_queue=0)
 
     response = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "map_token": MAP_TOKEN}
+        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
     )
 
     assert response.status_code == 429

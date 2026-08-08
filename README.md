@@ -46,6 +46,7 @@ A stored record has this envelope:
 |---|---|---|
 | `GET` | `/v1/health/metrics` | List all metric names and units available across stored exports. |
 | `GET` | `/v1/health/summary` | Aggregate a metric over a date range. |
+| `GET` | `/v1/health/chart` | A metric's daily series with a moving average, rendered for embedding. |
 
 **`GET /v1/health/summary` parameters:**
 
@@ -100,7 +101,7 @@ Apple Health workout sessions (Outdoor Walk, Outdoor Cycling, Paddle Sports, etc
 | `GET` | `/v1/workouts/{workout_id}/route` | GPS route points for a single workout. |
 | `GET` | `/v1/workouts/routes/geojson` | GeoJSON coverage map of every route inside a geographic box. |
 | `GET` | `/v1/workouts/routes/map` | The same coverage rendered as a Leaflet page, for embedding in a dashboard. |
-| `GET` | `/v1/map-token` | The derived read-only token that unlocks the map page. |
+| `GET` | `/v1/embed-token` | The derived read-only token that unlocks the map page. |
 
 **`GET /v1/workouts/types` parameters:**
 
@@ -222,24 +223,49 @@ The GeoJSON is embedded in the document rather than fetched, so the page is a si
 **Authentication.** An iframe cannot send an `Authorization` header, so the map page also accepts a token in the query string. That token is *not* `HEALTH_EXPORT_API_TOKEN` — putting the real token in a dashboard config and browser history would expose ingestion rights. Instead a second, read-only token is derived at startup:
 
 ```
-map_token = HMAC-SHA256(HEALTH_EXPORT_API_TOKEN, "route-map")[:32]
+embed_token = HMAC-SHA256(HEALTH_EXPORT_API_TOKEN, "embed")[:32]
 ```
 
 It cannot be reversed to the API token, leaking it exposes the coverage map and nothing else, and rotating the API token rotates it too. Fetch it once with the real bearer token:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" https://your-host/v1/map-token
+curl -H "Authorization: Bearer $TOKEN" https://your-host/v1/embed-token
 ```
 
 Then embed:
 
 ```yaml
 type: iframe
-url: https://your-host/v1/workouts/routes/map?lat=52.52&lon=13.40&width=4000&height=4000&min_count=3&map_token=…
+url: https://your-host/v1/workouts/routes/map?lat=52.52&lon=13.40&width=4000&height=4000&min_count=3&embed_token=…
 aspect_ratio: 100%
 ```
 
-Every other endpoint still requires the real bearer token; `map_token` unlocks only this page.
+Every other endpoint still requires the real bearer token; `embed_token` unlocks only the embeddable pages (`/v1/workouts/routes/map` and `/v1/health/chart`).
+
+### Metric chart
+
+`GET /v1/health/chart` renders a metric's daily series as a line chart, with a bold moving average over the day-to-day readings — the companion to the map card, for embedding the same way.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `metric` | required | e.g. `weight_body_mass`. See `/v1/health/metrics`. |
+| `date_range` / `start_date` / `end_date` | `last 90 days` | Same syntax as the health summary. |
+| `window` | `7` | Moving-average window in days. `0` draws the daily line only. |
+| `title` | derived from `metric` | Used as the page title. |
+| `refresh_minutes` | `30` | How often the page reloads itself. |
+| `embed_token` | — | Same token as the map page. |
+
+The moving average is a **trailing calendar-day window**, not a trailing N samples: readings are near-daily but not every day, and a sample-count window would silently stretch across a gap and average a longer period than advertised. It is emitted only on days that have a reading, and only once the window holds at least two — otherwise the first point would just be the raw value redrawn.
+
+The daily line **breaks when consecutive readings are more than 3 days apart**, so a hiatus shows as a gap rather than a straight line drawn through days that were never measured.
+
+The y axis is **zoomed to the data, never zero-based** — body weight moves a few pounds around ~190, and a zero baseline would flatten every real movement.
+
+```yaml
+type: iframe
+url: https://your-host/v1/health/chart?metric=weight_body_mass&date_range=last+90+days&window=7&embed_token=…
+grid_options: {columns: full, rows: 6}
+```
 
 > ⚠️ **Hevy double-count warning:** Hevy writes completed workouts back to HealthKit as `Traditional Strength Training`. Apple Health metrics like `active_energy` and `apple_exercise_time` already include those sessions. Do not add Apple Health exercise totals to Hevy session totals — they overlap. Use the Hevy MCP tools for structured strength-session detail.
 
