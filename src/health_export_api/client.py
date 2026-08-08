@@ -97,6 +97,7 @@ class HealthExportClient:
         workout_type: list[str] | None = None,
         max_vertices: int | None = None,
         tolerance_m: float | None = None,
+        min_count: int | None = None,
     ) -> dict[str, Any]:
         """Get a GeoJSON coverage map of all routes inside a box."""
         params: dict[str, Any] = {
@@ -117,6 +118,8 @@ class HealthExportClient:
             params["max_vertices"] = str(max_vertices)
         if tolerance_m is not None:
             params["tolerance_m"] = str(tolerance_m)
+        if min_count is not None:
+            params["min_count"] = str(min_count)
         response = self._http_client.get(
             f"{self._base_url}/v1/workouts/routes/geojson",
             headers=self._headers,

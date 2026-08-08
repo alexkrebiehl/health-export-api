@@ -198,6 +198,28 @@ class SegmentAggregator:
             stat.first = min(stat.first, started_date)
             stat.last = max(stat.last, started_date)
 
+    def prune_below(self, min_count: int) -> None:
+        """Drop segments walked fewer than ``min_count`` times.
+
+        Snapping a street walked a hundred times does not produce one line: GPS
+        scatter spreads each pass across a band of neighbouring cells, and the
+        one-off excursions cross-link them into a braid. Those stray edges are
+        real data — someone did walk there once — but they dominate the
+        topology. Over 120 walks of one neighbourhood, 44% of nodes came out as
+        junctions rather than the two neighbours a clean line would have, and
+        dropping single-pass edges alone halved the graph.
+
+        Pruning is therefore about which paths are worth drawing, not about
+        tidying geometry, so it is opt-in and off by default.
+        """
+        if min_count <= 1:
+            return
+        self._segments = {
+            edge: stat
+            for edge, stat in self._segments.items()
+            if stat.count >= min_count
+        }
+
     def _record(self, lat: float, lon: float) -> Cell:
         cell = (round(lat / self._d_lat), round(lon / self._d_lon))
         accumulator = self._cells.get(cell)

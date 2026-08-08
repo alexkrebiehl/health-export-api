@@ -751,6 +751,7 @@ class Store:
         workout_types: Sequence[str] | None = None,
         max_vertices: int = 50_000,
         tolerance_m: float = 15.0,
+        min_count: int = 1,
     ) -> dict[str, Any]:
         """Union every route inside a box into a GeoJSON coverage map.
 
@@ -761,6 +762,7 @@ class Store:
             workout_types: Optional whitelist of workout names; all by default.
             max_vertices: Hard ceiling on coordinates in the result.
             tolerance_m: Starting grid size; paths closer than this merge.
+            min_count: Drop paths used fewer than this many times.
 
         Returns:
             A GeoJSON FeatureCollection of LineStrings, each carrying the
@@ -829,6 +831,10 @@ class Store:
                     completed = None
                     continue
 
+                # Prune before measuring, so the vertex budget is spent on the
+                # paths that survive rather than on discarded ones.
+                aggregator.prune_below(min_count)
+
                 # Chains are cheap; only the accepted pass pays to build the
                 # feature dictionaries around them.
                 chains = aggregator.chains()
@@ -856,6 +862,7 @@ class Store:
             "features": features,
             "properties": {
                 "tolerance_m": round(tolerance, 3),
+                "min_count": min_count,
                 "vertex_count": vertices,
                 "feature_count": len(features),
                 # The session query already required a point inside the box.

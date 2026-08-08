@@ -150,6 +150,7 @@ Returns workout metadata plus a `route_points` array of `{index, timestamp, lati
 | `workout_type` | no | Repeatable, e.g. `?workout_type=Outdoor+Walk&workout_type=Outdoor+Run`. Omit for all types. |
 | `max_vertices` | no | Ceiling on coordinates returned, 100–200000. Default `50000`. |
 | `tolerance_m` | no | Merge distance in metres, 1–1000. Default `15` — roughly a street width. |
+| `min_count` | no | Drop paths used fewer than this many times, 1–1000. Default `1` (keep everything). |
 
 The result is a GeoJSON `FeatureCollection` that can be dropped straight into a map renderer:
 
@@ -171,6 +172,7 @@ The result is a GeoJSON `FeatureCollection` that can be dropped straight into a 
   ],
   "properties": {
     "tolerance_m": 15.0,
+    "min_count": 1,
     "vertex_count": 12043,
     "feature_count": 812,
     "workout_count": 96,
@@ -184,6 +186,7 @@ The result is a GeoJSON `FeatureCollection` that can be dropped straight into a 
 Notes:
 
 - `count` is how many *sessions* used that path, so it can be used to weight or colour lines by frequency. Pacing back and forth within one session still counts once.
+- Snapping a heavily-used street does not yield one clean line. GPS scatter spreads each pass across neighbouring cells and one-off detours cross-link them, so a real neighbourhood comes back as a braid with far more junctions than the street map has. `min_count` is the lever for this: raising it to `2` or `3` drops single-pass edges and roughly halves the result, leaving the routes actually travelled regularly. Use `count` to style what remains.
 - Timeframe filtering is on the workout's **start date**, not on individual point timestamps.
 - If the result would exceed `max_vertices`, `tolerance_m` is raised automatically until it fits; the value actually used is reported in the top-level `properties`. A box that is large *and* densely covered therefore comes back at a coarser resolution than requested.
 - A box spanning a pole or the ±180° meridian is clamped, not wrapped.

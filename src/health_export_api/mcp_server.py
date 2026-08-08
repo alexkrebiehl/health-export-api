@@ -152,6 +152,7 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
         workout_type: list[str] | None = None,
         max_vertices: int = 2000,
         tolerance_m: float = 15.0,
+        min_count: int = 1,
     ) -> dict[str, Any]:
         """Get a GeoJSON map of every route travelled inside a geographic box.
 
@@ -168,6 +169,9 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
                       automatically to fit. Keep this small — GeoJSON is verbose.
         tolerance_m: paths closer together than this merge into one, e.g. the two
                      sides of a street. Default 15.
+        min_count: drop paths used fewer than this many times. Default 1 (keep
+                   everything). Raise it to cut one-off detours and GPS scatter
+                   and leave only regular routes — 2 or 3 thins the map a lot.
         """
         if not 1 <= max_vertices <= 10000:
             raise ValueError("max_vertices must be between 1 and 10000")
@@ -182,6 +186,7 @@ def create_mcp_server(client: ExportQueryClient) -> FastMCP:
             workout_type=workout_type,
             max_vertices=max_vertices,
             tolerance_m=tolerance_m,
+            min_count=min_count,
         )
 
     # -------------------------------------------------------------------------

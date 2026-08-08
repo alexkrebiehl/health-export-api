@@ -201,6 +201,41 @@ def test_chain_splits_where_the_traversal_count_changes() -> None:
     assert sorted(f["properties"]["count"] for f in features) == [1, 2]
 
 
+def test_prune_below_drops_the_least_travelled_paths() -> None:
+    aggregator = SegmentAggregator(center_lat=52.52, tolerance_m=15.0)
+    # The street twice, plus one detour down a side road.
+    for index, track in enumerate([
+        _straight(CENTER_LAT), _straight(CENTER_LAT),
+        [(CENTER_LAT, _lon(2)), (CENTER_LAT - 0.0005, _lon(2))],
+    ]):
+        aggregator.add_workout(
+            [(i, lat, lon) for i, (lat, lon) in enumerate(track)],
+            workout_type="Outdoor Walk",
+            started_date=f"2026-07-{10 + index:02d}",
+        )
+    assert len(aggregator.features()) == 3  # the detour splits the street
+
+    aggregator.prune_below(2)
+    features = aggregator.features()
+
+    assert len(features) == 1
+    assert features[0]["properties"]["count"] == 2
+    assert len(features[0]["geometry"]["coordinates"]) == 5
+
+
+def test_prune_below_one_keeps_everything() -> None:
+    aggregator = SegmentAggregator(center_lat=52.52, tolerance_m=15.0)
+    aggregator.add_workout(
+        [(i, lat, lon) for i, (lat, lon) in enumerate(_straight(CENTER_LAT))],
+        workout_type="Outdoor Walk",
+        started_date="2026-07-10",
+    )
+
+    aggregator.prune_below(1)
+
+    assert len(aggregator.features()) == 1
+
+
 def test_properties_span_the_dates_and_types_that_contributed() -> None:
     aggregator = SegmentAggregator(center_lat=52.52, tolerance_m=15.0)
     for index, name in enumerate(["Outdoor Walk", "Outdoor Run"]):
@@ -366,6 +401,25 @@ def test_max_vertices_is_respected_by_coarsening_the_tolerance(
     assert detailed["properties"]["vertex_count"] == 400
     assert budgeted["properties"]["vertex_count"] <= 100
     assert budgeted["properties"]["tolerance_m"] > 15.0
+
+
+def test_min_count_keeps_only_repeatedly_travelled_paths(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(
+        client,
+        _workout("walk-1", day=10, points=_straight(CENTER_LAT)),
+        _workout("walk-2", day=11, points=_straight(CENTER_LAT)),
+        _workout("walk-3", day=12, points=_straight(CENTER_LAT - 0.001)),
+    )
+
+    everything = fetch(client)
+    regulars = fetch(client, min_count=2)
+
+    assert sorted(f["properties"]["count"] for f in everything["features"]) == [1, 2]
+    assert [f["properties"]["count"] for f in regulars["features"]] == [2]
+    assert regulars["properties"]["min_count"] == 2
+    # Both workouts are still reported: the filter is on paths, not sessions.
+    assert regulars["properties"]["workout_count"] == 3
 
 
 def test_an_empty_area_returns_an_empty_feature_collection(tmp_path: Path) -> None:
