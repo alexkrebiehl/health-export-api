@@ -40,20 +40,29 @@ _TEMPLATE = Template("""<!doctype html>
 $palette
   html,body{margin:0;height:100%;background:var(--surface);
     font:13px/1.4 $font;color:var(--ink)}
+  /* A *size* container, not inline-size: the text has to react to height as
+     well as width. With inline-size only `cqw` is available, so a short wide
+     tile could not use its height and a narrow one shrank the type even with
+     vertical room to spare.
+
+     Each size is the smaller of two budgets — a share of the height (`cqh`)
+     and a share of the width (`cqw`) — so whichever dimension binds first
+     wins, and the text neither overflows nor leaves the tile half empty. */
+  body{container-type:size}
   #tile{height:100%;display:flex;flex-direction:column;justify-content:center;
-        padding:0 clamp(10px,4%,22px);box-sizing:border-box}
-  .label{color:var(--ink-2);font-size:clamp(11px,3.2cqw,14px);
-         letter-spacing:.01em;margin-bottom:2px}
+        gap:1.5cqh;padding:3cqh 4cqw;box-sizing:border-box}
+  .label{color:var(--ink-2);font-size:min(14cqh,${label_cqw}cqw);line-height:1.15;
+         letter-spacing:.01em;white-space:nowrap}
   /* Proportional figures on purpose: tabular-nums pads every digit to a zero's
      width, which looks gappy at display sizes. */
-  .value{color:var(--ink);font-weight:600;line-height:1.05;
-         font-size:clamp(26px,11cqw,52px);white-space:nowrap}
+  .value{color:var(--ink);font-weight:600;line-height:1;
+         font-size:min(52cqh,${value_cqw}cqw);white-space:nowrap}
   .value .unit{font-size:.45em;font-weight:500;color:var(--ink-2);
-               margin-left:.25em}
-  .note{color:var(--muted);font-size:clamp(10px,3cqw,13px);margin-top:4px}
+               margin-left:.22em}
+  .note{color:var(--muted);font-size:min(12cqh,${note_cqw}cqw);line-height:1.15;
+        white-space:nowrap}
   .good{color:var(--good)}
   .empty{color:var(--muted)}
-  body{container-type:inline-size}
 </style>
 </head>
 <body>
@@ -66,6 +75,36 @@ $palette
 </body>
 </html>
 """)
+
+
+# Approximate advance widths, in em, for the system sans. Only good to a few
+# percent, which is all the width budget below needs — the point is that a
+# short string is allowed to grow larger than a long one, not to typeset.
+_EM_WIDTHS = {" ": 0.26, ".": 0.28, ",": 0.28, "·": 0.32,
+              "↓": 0.75, "↑": 0.75, "→": 0.85, "—": 1.0}
+_EM_DEFAULT = 0.58
+
+# Share of the tile's width each element may occupy. Padding is 4cqw a side.
+_WIDTH_BUDGET = {"value": 84.0, "label": 84.0, "note": 84.0}
+
+
+def _em_width(text: str) -> float:
+    return sum(_EM_WIDTHS.get(character, _EM_DEFAULT) for character in text)
+
+
+def _cqw_from_em(em: float, budget: float, *, cap: float) -> float:
+    """Font size, as a share of tile width, that fills `budget` at `em` wide.
+
+    Without this the width budget would have to assume a string length, and a
+    short value in a narrow tile would be typeset far smaller than it needs to
+    be — the tile would look half empty purely because a constant was picked
+    for the longest plausible string.
+    """
+    return cap if em <= 0 else min(cap, round(budget / em, 2))
+
+
+def _cqw_for(text: str, budget: float, *, cap: float) -> float:
+    return _cqw_from_em(_em_width(text), budget, cap=cap)
 
 
 def _fmt(value: float) -> str:
@@ -84,7 +123,7 @@ def render_latest_tile(
 ) -> str:
     """Tile showing the most recent reading and how fresh it is."""
     if reading is None:
-        return _render(label, "—", "No readings yet", "", refresh_minutes)
+        return _render(label, "—", "", "No readings yet", "", refresh_minutes)
 
     day, value = reading
     age = ((today or date.today()) - day).days
@@ -95,8 +134,7 @@ def render_latest_tile(
     else:
         note = f"{age} days ago"
     note += day.strftime(" · %-d %b")
-    return _render(label, f"{_fmt(value)}<span class=\"unit\">{unit}</span>",
-                   note, "", refresh_minutes)
+    return _render(label, _fmt(value), unit, note, "", refresh_minutes)
 
 
 def render_change_tile(
@@ -110,12 +148,13 @@ def render_change_tile(
 ) -> str:
     """Tile showing a signed week-over-week change."""
     if change is None:
-        return _render(label, "—", f"Not enough readings for {window_days} days",
+        return _render(label, "—", "",
+                       f"Not enough readings for {window_days} days",
                        "", refresh_minutes)
 
     _, _, delta = change
     arrow = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
-    value = f"{arrow} {_fmt(abs(delta))}<span class=\"unit\">{unit}</span>"
+    value = f"{arrow} {_fmt(abs(delta))}"
 
     # Colour only when the caller has said which way is good; the arrow and
     # sign carry direction on their own either way.
@@ -123,17 +162,33 @@ def render_change_tile(
         delta > 0 and good_direction == "up"
     )
     tone = "good" if improving else ""
-    return _render(label, value, f"vs previous {window_days} days", tone,
-                   refresh_minutes)
+    return _render(label, value, unit, f"vs previous {window_days} days",
+                   tone, refresh_minutes)
 
 
-def _render(label: str, value: str, note: str, tone: str, refresh_minutes: int) -> str:
+def _render(
+    label: str,
+    main: str,
+    unit: str,
+    note: str,
+    tone: str,
+    refresh_minutes: int,
+) -> str:
+    # The unit rides at 0.45em with a 0.22em gap, so it costs proportionally
+    # less width than its character count suggests.
+    value_em = _em_width(main) + (0.22 + _em_width(unit) * 0.45 if unit else 0.0)
+    value_html = main + (f'<span class="unit">{unit}</span>' if unit else "")
+
     return _TEMPLATE.substitute(
         title=label,
         label=label,
-        value=value,
+        value=value_html,
         note=note,
         tone=tone,
+        # Caps stop a very short string ballooning past the height budget.
+        value_cqw=_cqw_from_em(value_em, _WIDTH_BUDGET["value"], cap=40.0),
+        label_cqw=_cqw_for(label, _WIDTH_BUDGET["label"], cap=9.0),
+        note_cqw=_cqw_for(note, _WIDTH_BUDGET["note"], cap=8.0),
         palette=PALETTE_CSS,
         font=FONT_STACK,
         refresh_ms=refresh_minutes * 60_000,
