@@ -8,7 +8,7 @@ be far more weight than the drawing it does.
 Design notes:
 
 * **Two lines, one measure.** The daily readings are drawn thin in muted ink;
-  the moving average sits on top, bold and saturated. They are the same
+  the rolling trend sits on top, bold and saturated. They are the same
   quantity at two levels of processing, so this is an emphasis pair rather than
   two competing categorical hues — the raw series is deliberately desaturated
   so the trend dominates.
@@ -40,9 +40,10 @@ Point = tuple[date, float]
 # the normal cadence continuous while a real hiatus still shows as a break.
 DEFAULT_MAX_GAP_DAYS = 3
 
-# A window narrower than this is just the raw value redrawn, so the average
-# only starts once it has something to average.
-_MIN_WINDOW_SAMPLES = 2
+# Least squares through two points is just the segment joining them, which
+# would draw the trend on top of the raw line and say nothing. Three is the
+# smallest window where the fit actually does any fitting.
+_MIN_FIT_POINTS = 3
 
 _W, _H = 1000, 320
 _PAD_L, _PAD_R, _PAD_T, _PAD_B = 46, 14, 16, 26
@@ -53,29 +54,51 @@ _PAD_L, _PAD_R, _PAD_T, _PAD_B = 46, 14, 16, 26
 # ---------------------------------------------------------------------------
 
 
-def moving_average(
-    points: Sequence[Point], window_days: int, *, min_samples: int = _MIN_WINDOW_SAMPLES
+def rolling_trend(
+    points: Sequence[Point], window_days: int, *, min_points: int = _MIN_FIT_POINTS
 ) -> list[Point]:
-    """Trailing calendar-day mean, anchored to days that have a reading.
+    """Rolling least-squares fit, evaluated at the right edge of each window.
 
-    A trailing *calendar* window rather than a trailing N samples: readings are
-    near-daily but not every day, and a sample-count window would silently
-    stretch across a gap and average over a longer period than advertised.
+    At each day with a reading, fit a straight line through the readings in the
+    trailing window and take that line's value *at that day*. Unlike a moving
+    average this follows the local slope rather than averaging it away, so it
+    turns with the data instead of lagging half a window behind it.
+
+    A trailing *calendar* window rather than a trailing N points: readings are
+    near-daily but not every day, and a point-count window would silently
+    stretch across a gap and fit over a longer period than advertised.
+
+    Days are measured from the first reading, so the regression works in small
+    numbers regardless of how far into the epoch the dates sit.
     """
-    if window_days < 1:
+    if window_days < 1 or not points:
         return []
+
+    origin = points[0][0]
+    xs = [(day - origin).days for day, _ in points]
+
     out: list[Point] = []
     start = 0
-    total = 0.0
-    for end, (day, value) in enumerate(points):
-        total += value
+    for end, (day, _) in enumerate(points):
         earliest = day - timedelta(days=window_days - 1)
         while points[start][0] < earliest:
-            total -= points[start][1]
             start += 1
         count = end - start + 1
-        if count >= min_samples:
-            out.append((day, total / count))
+        if count < min_points:
+            continue
+
+        window_x = xs[start : end + 1]
+        window_y = [v for _, v in points[start : end + 1]]
+        mean_x = sum(window_x) / count
+        mean_y = sum(window_y) / count
+        sxx = sum((x - mean_x) ** 2 for x in window_x)
+        if sxx == 0:
+            # Every reading on one day; a slope is undefined, so use the level.
+            out.append((day, mean_y))
+            continue
+        sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(window_x, window_y))
+        slope = sxy / sxx
+        out.append((day, mean_y + slope * (xs[end] - mean_x)))
     return out
 
 
@@ -229,7 +252,7 @@ $body
 
     tip.innerHTML = '<span>' + p.label + '</span><br>' + p.rv + ' ' + d.unit +
       (hasTrend ? '<br><b>' + p.tv + ' ' + d.unit + '</b> <span>' + d.window +
-                  '-day avg</span>' : '');
+                  '-day trend</span>' : '');
     var s = toScreen(p.x, y), w = wrap.getBoundingClientRect();
     tip.style.left = (s.x - w.left) + 'px';
     tip.style.top  = (s.y - w.top) + 'px';
@@ -271,7 +294,7 @@ def render_chart_page(
             refresh_ms=refresh_minutes * 60_000,
         )
 
-    trend = moving_average(points, window) if window >= 1 else []
+    trend = rolling_trend(points, window) if window >= 1 else []
     trend_by_day = dict(trend)
 
     first, last = points[0][0], points[-1][0]

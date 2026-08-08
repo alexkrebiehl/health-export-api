@@ -46,7 +46,7 @@ A stored record has this envelope:
 |---|---|---|
 | `GET` | `/v1/health/metrics` | List all metric names and units available across stored exports. |
 | `GET` | `/v1/health/summary` | Aggregate a metric over a date range. |
-| `GET` | `/v1/health/chart` | A metric's daily series with a moving average, rendered for embedding. |
+| `GET` | `/v1/health/chart` | A metric's daily series with a rolling trend line, rendered for embedding. |
 
 **`GET /v1/health/summary` parameters:**
 
@@ -244,7 +244,7 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 
 ### Metric chart
 
-`GET /v1/health/chart` renders a metric's daily series as a line chart, with a bold moving average over the day-to-day readings — the companion to the map card, for embedding the same way.
+`GET /v1/health/chart` renders a metric's daily series as a line chart, with a bold rolling trend line over the day-to-day readings — the companion to the map card, for embedding the same way.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -255,7 +255,9 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 | `refresh_minutes` | `30` | How often the page reloads itself. |
 | `embed_token` | — | Same token as the map page. |
 
-The moving average is a **trailing calendar-day window**, not a trailing N samples: readings are near-daily but not every day, and a sample-count window would silently stretch across a gap and average a longer period than advertised. It is emitted only on days that have a reading, and only once the window holds at least two — otherwise the first point would just be the raw value redrawn.
+The trend is a **rolling least-squares fit**, not a moving average: at each day with a reading, a straight line is fitted through the readings in the trailing window and evaluated at that day. It follows the local slope rather than averaging it away, so it turns with the data instead of lagging half a window behind it.
+
+The window is **calendar days**, not a count of points: readings are near-daily but not every day, and a point-count window would silently stretch across a gap and fit over a longer period than advertised. The fit needs **at least three readings** in the window — least squares through two points is just the segment joining them, which would draw the trend on top of the raw line and say nothing.
 
 The daily line **breaks when consecutive readings are more than 3 days apart**, so a hiatus shows as a gap rather than a straight line drawn through days that were never measured.
 

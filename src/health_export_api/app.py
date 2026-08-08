@@ -192,7 +192,7 @@ def create_app(
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
-        """A metric's daily series with a moving average, for embedding."""
+        """A metric's daily series with a rolling trend line, for embedding."""
         authorize_embed(authorization, embed_token)
 
         # Unlike the summary endpoints the timeframe is optional here, so the
