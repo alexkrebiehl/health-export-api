@@ -207,11 +207,16 @@ _TEMPLATE = Template("""<!doctype html>
 $palette
   html,body{margin:0;height:100%;background:var(--surface);
     font:13px/1.4 $font;color:var(--ink)}
-  /* Fit inside the frame in both axes: a card is not always the chart's
-     aspect ratio, and height:auto overflows a short one. */
+  /* The plot fills the frame in both axes. `preserveAspectRatio: none` is
+     what makes that exact — "meet" would letterbox, leaving the chart short
+     of the card's height. Stretching the geometry is fine for a value scale,
+     but it must not stretch the ink: every stroked element carries
+     non-scaling-stroke so line weights stay as authored, and the tick labels
+     live in HTML positioned by percentage rather than in the SVG, so the type
+     is never distorted either. */
   #wrap{position:relative;width:100%;height:100%}
-  svg{width:100%;height:100%;display:block}
-  .tick{fill:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .grid,.axis,.raw,.trend,.cross{vector-effect:non-scaling-stroke}
   .grid{stroke:var(--grid);stroke-width:1}
   .axis{stroke:var(--axis);stroke-width:1}
   .raw{fill:none;stroke:var(--raw);stroke-width:1.5;
@@ -219,7 +224,16 @@ $palette
   .trend{fill:none;stroke:var(--trend);stroke-width:3;
          stroke-linecap:round;stroke-linejoin:round}
   .cross{stroke:var(--axis);stroke-width:1;opacity:0}
-  .dot{fill:var(--trend);stroke:var(--surface);stroke-width:2;opacity:0}
+  .tick{position:absolute;color:var(--muted);font-size:12px;
+        font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+  .ytick{transform:translate(-100%,-50%)}
+  /* Pinned to the bottom edge rather than positioned by percentage: the label
+     has a fixed height, so on a short frame a percentage puts it past the
+     bottom and it gets clipped. */
+  .xtick{transform:translate(-50%,0);bottom:3px}
+  #dot{position:absolute;width:9px;height:9px;border-radius:50%;
+       background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
+       transform:translate(-50%,-50%);opacity:0;pointer-events:none}
   #tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-115%);
        background:var(--surface);color:var(--ink);border:1px solid var(--axis);
        border-radius:6px;padding:5px 8px;white-space:nowrap;
@@ -241,22 +255,20 @@ $body
   if(!d.points.length) return;
   var svg = document.querySelector('svg');
   if(!svg) return;
-  var cross = svg.querySelector('.cross'), dot = svg.querySelector('.dot');
+  var cross = svg.querySelector('.cross');
+  var dot = document.getElementById('dot');
   var tip = document.getElementById('tip'), wrap = document.getElementById('wrap');
 
-  // The SVG scales to fit and may be letterboxed, so map through its CTM
-  // rather than assuming the drawing fills the element's box.
-  function toScreen(x, y){
-    var p = svg.createSVGPoint(); p.x = x; p.y = y;
-    return p.matrixTransform(svg.getScreenCTM());
-  }
-  function toViewBoxX(clientX){
-    var p = svg.createSVGPoint(); p.x = clientX; p.y = 0;
-    return p.matrixTransform(svg.getScreenCTM().inverse()).x;
-  }
+  // With preserveAspectRatio="none" the viewBox maps linearly onto the box,
+  // so the conversion is a plain ratio in each axis — no CTM needed, and the
+  // same ratios position the HTML overlay elements.
+  var VW = $vw, VH = $vh;
+  function fracX(x){ return x / VW; }
+  function fracY(y){ return y / VH; }
 
   function show(e){
-    var vx = toViewBoxX(e.clientX);
+    var box = svg.getBoundingClientRect();
+    var vx = (e.clientX - box.left) / box.width * VW;
     var best = 0, bestD = Infinity;
     for (var i = 0; i < d.points.length; i++){
       var dist = Math.abs(d.points[i].x - vx);
@@ -267,15 +279,16 @@ $body
 
     cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
     cross.style.opacity = 1;
-    dot.setAttribute('cx', p.x); dot.setAttribute('cy', y);
+
+    var left = (fracX(p.x) * 100) + '%', top = (fracY(y) * 100) + '%';
+    dot.style.left = left; dot.style.top = top;
     dot.style.opacity = 1;
 
     tip.innerHTML = '<span>' + p.label + '</span><br>' + p.rv + ' ' + d.unit +
       (hasTrend ? '<br><b>' + p.tv + ' ' + d.unit + '</b> <span>' + d.window +
                   '-day trend</span>' : '');
-    var s = toScreen(p.x, y), w = wrap.getBoundingClientRect();
-    tip.style.left = (s.x - w.left) + 'px';
-    tip.style.top  = (s.y - w.top) + 'px';
+    tip.style.left = left;
+    tip.style.top = top;
     tip.style.opacity = 1;
   }
   function hide(){ cross.style.opacity = 0; dot.style.opacity = 0; tip.style.opacity = 0; }
@@ -310,7 +323,7 @@ def render_chart_page(
         payload = {"points": [], "unit": unit, "window": window}
         return _TEMPLATE.substitute(
             title=title, body=body,
-            palette=PALETTE_CSS, font=FONT_STACK,
+            palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -333,13 +346,22 @@ def render_chart_page(
         return _H - _PAD_B - (v - low) / (high - low) * (_H - _PAD_T - _PAD_B)
 
     parts: list[str] = []
+    # Tick text lives outside the SVG. The SVG stretches to fill the frame, and
+    # anything inside it stretches too — type included — so the labels are HTML
+    # placed at the same coordinates expressed as percentages.
+    labels: list[str] = []
 
     for tick in _nice_ticks(low, high):
         y = sy(tick)
         parts.append(f'<line class="grid" x1="{_PAD_L}" y1="{y:.1f}" '
                      f'x2="{_W - _PAD_R}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="tick" x="{_PAD_L - 8}" y="{y + 4:.1f}" '
-                     f'text-anchor="end">{tick:g}</text>')
+        # The gutter is a percentage of width, so on a narrow frame it
+        # collapses and a right-aligned label runs off the left edge. The
+        # floor keeps a four-digit tick on screen at any width.
+        labels.append(
+            f'<div class="tick ytick" '
+            f'style="left:max(34px,{(_PAD_L - 8) / _W * 100:.3f}%);'
+            f'top:{y / _H * 100:.3f}%">{tick:g}</div>')
 
     # Month starts make honest x ticks over a 90-day window.
     month = date(first.year, first.month, 1)
@@ -348,8 +370,11 @@ def render_chart_page(
             x = sx(month)
             parts.append(f'<line class="axis" x1="{x:.1f}" y1="{_H - _PAD_B}" '
                          f'x2="{x:.1f}" y2="{_H - _PAD_B + 4}"/>')
-            parts.append(f'<text class="tick" x="{x:.1f}" y="{_H - _PAD_B + 18}" '
-                         f'text-anchor="middle">{month.strftime("%b")}</text>')
+            # Only the horizontal position comes from the plot; the CSS pins
+            # these to the bottom edge.
+            labels.append(
+                f'<div class="tick xtick" style="left:{x / _W * 100:.3f}%">'
+                f'{month.strftime("%b")}</div>')
         month = date(month.year + (month.month == 12),
                      month.month % 12 + 1, 1)
 
@@ -365,11 +390,10 @@ def render_chart_page(
             parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
 
     parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H - _PAD_B}"/>')
-    parts.append('<circle class="dot" r="4.5"/>')
 
-    body = (f'<svg viewBox="0 0 {_W} {_H}" role="img" '
+    body = (f'<svg viewBox="0 0 {_W} {_H}" preserveAspectRatio="none" role="img" '
             f'aria-label="{title}">{"".join(parts)}</svg>'
-            '<div id="tip"></div>')
+            f'{"".join(labels)}<div id="dot"></div><div id="tip"></div>')
 
     payload = {
         "unit": unit,
@@ -389,6 +413,7 @@ def render_chart_page(
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
+        vw=_W, vh=_H,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )

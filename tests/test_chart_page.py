@@ -145,6 +145,20 @@ def embedded(html: str) -> dict[str, Any]:
     return json.loads(match.group(1))
 
 
+def test_the_plot_fills_the_frame_without_distorting_ink() -> None:
+    html = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+
+    # Stretching to fill is the point; the ink must not stretch with it.
+    assert 'preserveAspectRatio="none"' in html
+    assert "vector-effect:non-scaling-stroke" in html
+    # Tick text sits in HTML, positioned by percentage, so it is never scaled.
+    assert "<text" not in html
+    assert re.search(r'class="tick ytick" style="left:max\(34px,[\d.]+%\);'
+                     r'top:[\d.]+%"', html)
+
+
 def test_render_draws_both_series() -> None:
     html = render_chart_page(
         summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
@@ -178,7 +192,8 @@ def test_y_axis_is_zoomed_to_the_data_not_zero_based() -> None:
         summary({f"2026-07-{i:02d}": 190.0 + (i % 3) for i in range(1, 15)})
     )
 
-    ticks = [float(t) for t in re.findall(r'class="tick"[^>]*>([\d.]+)</text>', html)]
+    ticks = [float(t)
+             for t in re.findall(r'class="tick ytick"[^>]*>([\d.]+)</div>', html)]
     assert ticks, "expected y ticks"
     assert min(ticks) > 150, f"axis should hug the data, got {ticks}"
 
