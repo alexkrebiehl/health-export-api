@@ -383,6 +383,33 @@ def test_a_stack_starts_at_zero_so_its_segments_keep_their_ratio() -> None:
     assert min(b["height"] for b in zoomed) < min(b["height"] for b in drawn)
 
 
+def test_only_the_top_of_a_stack_is_rounded_so_the_joins_read_continuous() -> None:
+    """Two rounded edges meeting pinched the join and broke up the column.
+
+    A rect rounds all four corners or none, which is why the segments are
+    paths: the capping one curves at the data end, every join below it is
+    square.
+    """
+    html = stacked()
+
+    paths = re.findall(r'<path class="bar[^"]*" d="([^"]+)"', html)
+    curved = [d for d in paths if "Q" in d]
+    square = [d for d in paths if "Q" not in d]
+
+    # Two stacks over seven days: seven caps, and the resting segment beneath
+    # each burn cap stays square.
+    assert len(curved) == 14, "one rounded cap per bar"
+    assert len(square) == 7, "the segment under each cap is square"
+    # Nothing is rounded at the base — the data end is the top.
+    for d in curved:
+        assert d.count("Q") == 2
+
+    # A lone bar is capped the same way, square where it meets the axis.
+    solo = re.findall(r'<path class="bar[^"]*" d="([^"]+)"',
+                      render_chart_page(steps_only(), kind="bar", window=0))
+    assert all(d.count("Q") == 2 for d in solo)
+
+
 def test_grouped_stacks_sit_side_by_side_without_overlapping() -> None:
     drawn = bars(stacked(layout="grouped"))
 
@@ -390,9 +417,10 @@ def test_grouped_stacks_sit_side_by_side_without_overlapping() -> None:
     # Two distinct x positions per day, and the burn bar's right edge stops
     # before the intake bar's left edge.
     assert len(xs) == 14
-    widths = {round(b["width"], 1) for b in drawn}
-    assert len(widths) == 1, "grouped stacks share one slice width"
-    assert xs[0] + widths.pop() <= xs[1] + 0.01
+    # One slice width, to within the 1dp the path coordinates are printed at.
+    widths = [b["width"] for b in drawn]
+    assert max(widths) - min(widths) <= 0.2, "grouped stacks share one slice width"
+    assert xs[0] + max(widths) <= xs[1] + 0.2
 
 
 def test_overlay_draws_the_later_stack_as_a_line_over_the_bars() -> None:
@@ -455,12 +483,20 @@ def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
 
 
 def bars(html: str) -> list[dict[str, float]]:
-    return [
-        # The leading space matters: without it `rx=` matches as `x=`.
-        {k: float(v) for k, v in re.findall(r' (x|y|width|height)="([\d.-]+)"', tag)}
-        # `bar` alone on a lone series, `bar s2` once a panel holds several.
-        for tag in re.findall(r'<rect class="bar[^"]*"[^/]*/>', html)
-    ]
+    """Bar geometry, recovered from each bar's path.
+
+    Bars are paths rather than rects so the data end can be rounded while the
+    joins inside a stack stay square. Capped or square, both forms trace the
+    same rectangle, so the extremes of the coordinates give it back.
+    """
+    out = []
+    # `bar` alone on a lone series, `bar s2` once a panel holds several.
+    for d in re.findall(r'<path class="bar[^"]*" d="([^"]+)"', html):
+        numbers = [float(n) for n in re.findall(r"-?[\d.]+", d)]
+        xs, ys = numbers[0::2], numbers[1::2]
+        out.append({"x": min(xs), "y": min(ys),
+                    "width": max(xs) - min(xs), "height": max(ys) - min(ys)})
+    return out
 
 
 def steps_only() -> dict[str, Any]:

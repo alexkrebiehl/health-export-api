@@ -311,7 +311,11 @@ Sharing an axis is only honest when the measures share a unit — that is the ca
 - **`grouped`** — one bar per stack, side by side inside the day's slot. Best for a direct comparison: burn against intake reads as the height gap between two bars.
 - **`overlay`** — the first stack draws as bars, later stacks as lines over them. Better for following one series' trend across the window.
 
-`legend` follows: a key appears above the plot when a panel holds more than one series, because nothing else says which fill is which. Single-metric and multi-panel cards stay bare as before. `legend=false` turns it off. The fills come from the `dataviz` reference palette and were checked with its validator in both modes — two steps of one hue were tried first and rejected, measuring ΔE 9.5 against the 15 floor for full-colour vision.
+`legend` follows: a key appears above the plot when a panel holds more than one series, because nothing else says which fill is which. Single-metric and multi-panel cards stay bare as before. `legend=false` turns it off.
+
+The fills come from the `dataviz` reference palette, checked with its validator in both modes. Slots 1 and 2 are two steps of one hue and slot 3 contrasts with them, which suits parts-of-a-whole beside a separate measure — resting and active energy are components of burn, so relating them by hue says something true, while intake is a different quantity. That one-hue pair has to be validated as an **ordinal ramp** rather than as categorical slots: the categorical check asks whether two independent series can be told apart and fails the pair at ΔE 9.5 against a floor of 15, which is the wrong question for two halves of one bar.
+
+Bars are drawn as paths rather than rects so the **data end can be rounded while the joins stay square**. A rect rounds all four corners or none, and inside a stack two rounded edges meeting pinch the join, breaking the column into pieces. Only the segment that caps a stack gets the corners.
 
 **Stacks start at zero unless you say otherwise.** A stacked bar claims its segments sum to its height; cut the axis off above zero and only the bottom segment is foreshortened, so the split between the parts misstates their ratio — 2,123 resting against 1,072 active reads as 1.5:1 rather than 2:1. Zoom-to-data is the right default for one series and the wrong one here, so `baseline` defaults to `0` for a stacked chart. Pass it explicitly to override.
 

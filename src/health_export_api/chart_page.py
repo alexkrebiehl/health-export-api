@@ -85,12 +85,18 @@ _BAR_SLOT_FILL = 0.62
 # card's proportions; the corner is decoration, so drifting a pixel is fine.
 _BAR_RX, _BAR_RY = 3.6, 3.2
 
-# Categorical fills available to a multi-series panel, in fixed order — never
-# cycled into a ninth hue. The steps come from the `dataviz` reference palette
-# and were checked with its validator in both modes, not chosen by eye: two
-# steps of one hue read as identical to full-colour vision (ΔE 9.5, under the
-# 15 floor), so the burn stack takes contrasting hues and the bar's own shape
-# carries the grouping.
+# Fills available to a multi-series panel, in fixed order — never cycled into
+# a ninth hue. The steps come from the `dataviz` reference palette and were
+# checked with its validator in both modes rather than chosen by eye.
+#
+# Slots 1 and 2 are two steps of one hue and slot 3 contrasts with them, which
+# suits parts-of-a-whole beside a separate measure: resting and active energy
+# are components of burn, so relating them by hue says something true, while
+# intake is a different quantity and takes a different one. The one-hue pair
+# has to be validated as an *ordinal ramp*, not as categorical slots — as
+# categorical it fails the normal-vision floor at ΔE 9.5 against 15, because
+# that check asks whether two independent series can be told apart, which is
+# the wrong question for two halves of a stacked bar.
 _SERIES_TONES = 3
 
 
@@ -300,6 +306,29 @@ def _path(points: Sequence[Point], sx, sy) -> str:
     return "M " + " L ".join(f"{sx(d):.1f},{sy(v):.1f}" for d, v in points)
 
 
+def _bar_path(x: float, y: float, width: float, height: float, capped: bool) -> str:
+    """A bar as a path: rounded at the data end, square at the base.
+
+    A rect can only round all four corners at once, which is fine for a lone
+    bar sitting on the axis but wrong inside a stack — two rounded edges meeting
+    pinch the join and the column stops reading as one bar. So only the segment
+    that caps a stack gets the corners, and every join below it stays square.
+
+    The two radii differ because ``preserveAspectRatio="none"`` scales the axes
+    independently; equal ones would come out as a visible ellipse.
+    """
+    bottom, right = y + height, x + width
+    if not capped:
+        return f"M {x:.1f},{bottom:.1f} L {x:.1f},{y:.1f} " \
+               f"L {right:.1f},{y:.1f} L {right:.1f},{bottom:.1f} Z"
+    rx, ry = min(_BAR_RX, width / 2), min(_BAR_RY, height)
+    return (f"M {x:.1f},{bottom:.1f} L {x:.1f},{y + ry:.1f} "
+            f"Q {x:.1f},{y:.1f} {x + rx:.1f},{y:.1f} "
+            f"L {right - rx:.1f},{y:.1f} "
+            f"Q {right:.1f},{y:.1f} {right:.1f},{y + ry:.1f} "
+            f"L {right:.1f},{bottom:.1f} Z")
+
+
 @dataclass(frozen=True)
 class Series:
     """One metric's readings, with everything needed to draw and label it."""
@@ -428,7 +457,9 @@ $palette
   .raw.s3,.over.s3{stroke:var(--series-3)}
   /* An overlaid stack: a line over the bars, so it needs the weight to read
      against them rather than the muted treatment a raw series gets. */
-  .over{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+  /* Drawn over the bars, so it needs more weight than a series line
+     sitting on an empty plot would. */
+  .over{fill:none;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
   .raw.s1,.raw.s2,.raw.s3{stroke-width:2}
   #key{position:absolute;top:0;left:0;right:0;display:flex;flex-wrap:wrap;
        gap:4px 14px;font-size:12px;color:var(--ink-2);pointer-events:none}
@@ -803,8 +834,14 @@ def render_chart_page(
             offset = (group_index - (bar_count - 1) / 2) * slice_w if as_bars else 0.0
             # Segments are drawn bottom-up, each starting where the last ended.
             below: dict[date, float] = {}
+            # Which segment caps each day's bar — the last one in the stack with
+            # a reading there. Only that one gets the rounded data-end.
+            caps: dict[date, int] = {}
+            for position, item in enumerate(group):
+                for day, _ in item.points:
+                    caps[day] = position
 
-            for item in group:
+            for stacked_at, item in enumerate(group):
                 position = panel.index(item)
                 tone = f" s{position % _SERIES_TONES + 1}" if multi else ""
                 if as_bars:
@@ -817,10 +854,9 @@ def render_chart_page(
                         if height <= 0:
                             continue
                         x = sx(day) - bar_w / 2 + offset
-                        parts.append(
-                            f'<rect class="bar{tone}" x="{x:.1f}" y="{y:.1f}" '
-                            f'width="{slice_w:.1f}" height="{height:.1f}" '
-                            f'rx="{_BAR_RX}" ry="{_BAR_RY}"/>')
+                        path = _bar_path(x, y, slice_w, height,
+                                         caps.get(day) == stacked_at)
+                        parts.append(f'<path class="bar{tone}" d="{path}"/>')
                         below[day] = base + value
                 elif kind == "bar":
                     # An overlaid stack: its running total drawn as a line.
