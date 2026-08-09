@@ -360,6 +360,20 @@ def test_the_balance_tile_says_when_the_window_came_up_short() -> None:
     assert "of 7" not in render_balance_tile((-3000.0, 7), window_days=7)
 
 
+def test_a_one_day_balance_describes_today_rather_than_counting_days() -> None:
+    # "over 1 day" is a clumsy way to say "today", and the day is still being
+    # lived — the burn is partial and so is whatever has been eaten.
+    today = render_balance_tile((-757.0, 1), unit="kcal", window_days=1)
+
+    assert "so far today" in today
+    assert "over 1 day" not in today
+    assert 'class="value good"' in today and "757" in today
+
+    # A surplus by the evening reads the other way, still with the word.
+    over = render_balance_tile((320.0, 1), unit="kcal", window_days=1)
+    assert 'class="value bad"' in over and "surplus" in over
+
+
 def test_the_balance_tile_has_an_empty_state() -> None:
     assert "No days with intake logged" in render_balance_tile(None)
 

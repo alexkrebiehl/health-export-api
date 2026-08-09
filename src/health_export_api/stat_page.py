@@ -246,11 +246,16 @@ def render_balance_tile(
     value = f"{arrow} {_fmt(abs(net), integral)}"
 
     word = "deficit" if deficit else ("surplus" if net else "even")
-    # A window shorter than asked for means days went unlogged; saying so beats
-    # presenting a 3-day figure as though it were a week.
-    covered = f"over {days} day{'' if days == 1 else 's'}"
-    if days < window_days:
-        covered += f" of {window_days}"
+    if window_days == 1:
+        # A one-day window ends on today, so it *is* today — and a day still
+        # being lived is better described than counted.
+        covered = "so far today"
+    else:
+        # A window shorter than asked for means days went unlogged; saying so
+        # beats presenting a 3-day figure as though it were a week.
+        covered = f"over {days} day{'' if days == 1 else 's'}"
+        if days < window_days:
+            covered += f" of {window_days}"
     tone = "good" if deficit else ("bad" if net else "")
     return _render(label, value, unit, f"{word} · {covered}",
                    tone, refresh_minutes, margin, align)
