@@ -8,8 +8,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from health_export_api.app import create_app, derive_embed_token
-from health_export_api.chart_page import latest_reading, window_change
-from health_export_api.stat_page import render_change_tile, render_latest_tile
+from health_export_api.chart_page import (
+    latest_reading,
+    window_balance,
+    window_change,
+)
+from health_export_api.stat_page import (
+    render_balance_tile,
+    render_change_tile,
+    render_latest_tile,
+)
 
 HEADERS = {"Authorization": "Bearer test-token"}
 EMBED_TOKEN = derive_embed_token("test-token")
@@ -234,6 +242,80 @@ def test_whole_numbers_drop_the_trailing_decimal() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Energy balance
+# ---------------------------------------------------------------------------
+
+
+def days(values: dict[str, float]) -> list[tuple[date, float]]:
+    return [(d(k), v) for k, v in values.items()]
+
+
+def test_window_balance_is_intake_minus_everything_spent() -> None:
+    eaten = days({"2026-07-10": 2000.0, "2026-07-11": 1800.0, "2026-07-12": 1900.0})
+    resting = days({"2026-07-10": 2100.0, "2026-07-11": 2100.0, "2026-07-12": 2100.0})
+    active = days({"2026-07-10": 900.0, "2026-07-11": 1000.0, "2026-07-12": 800.0})
+
+    net, counted = window_balance(eaten, [resting, active], 7, TODAY)
+
+    assert counted == 3
+    assert net == pytest.approx(5700 - (6300 + 2700))
+
+
+def test_a_day_with_no_intake_logged_is_left_out_entirely() -> None:
+    """The bug this guards against reads as a deficit but is a missing meal.
+
+    Burn is recorded continuously by the watch, so at 9am there is a partial
+    day of spend against nothing eaten yet. Counting it would report several
+    hundred calories of deficit that are really an unlogged breakfast.
+    """
+    eaten = days({"2026-07-10": 2000.0, "2026-07-11": 1800.0})
+    # Today has burn but no intake — the watch has been running since midnight.
+    burn = days({"2026-07-10": 3000.0, "2026-07-11": 3000.0, "2026-07-12": 700.0})
+
+    net, counted = window_balance(eaten, [burn], 7, TODAY)
+
+    assert counted == 2, "today has no intake, so it is not a day of data"
+    assert net == pytest.approx(3800 - 6000)
+
+
+def test_window_balance_is_none_when_nothing_was_logged() -> None:
+    assert window_balance([], [days({"2026-07-12": 700.0})], 7, TODAY) is None
+
+
+def test_window_balance_ignores_days_outside_the_window() -> None:
+    eaten = days({"2026-07-05": 9999.0, "2026-07-12": 2000.0})
+    burn = days({"2026-07-05": 1.0, "2026-07-12": 3000.0})
+
+    net, counted = window_balance(eaten, [burn], 3, TODAY)
+
+    assert counted == 1
+    assert net == pytest.approx(2000 - 3000)
+
+
+def test_the_balance_tile_colours_both_directions_but_never_alone() -> None:
+    deficit = render_balance_tile((-8351.0, 7), unit="kcal")
+    surplus = render_balance_tile((1200.0, 7), unit="kcal")
+
+    assert 'class="value good"' in deficit and "↓" in deficit and "deficit" in deficit
+    assert 'class="value bad"' in surplus and "↑" in surplus and "surplus" in surplus
+    # The word and the arrow carry it without colour, which is the requirement
+    # the change tile meets by staying neutral and this one meets by saying so.
+    assert "8,351" in deficit and "1,200" in surplus
+
+
+def test_the_balance_tile_says_when_the_window_came_up_short() -> None:
+    # Three logged days out of seven is a different claim from a full week.
+    short = render_balance_tile((-3000.0, 3), window_days=7)
+
+    assert "over 3 days of 7" in short
+    assert "of 7" not in render_balance_tile((-3000.0, 7), window_days=7)
+
+
+def test_the_balance_tile_has_an_empty_state() -> None:
+    assert "No days with intake logged" in render_balance_tile(None)
+
+
+# ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
@@ -350,6 +432,32 @@ def test_the_endpoint_reads_integral_from_the_stored_unit(tmp_path: Path) -> Non
                               "embed_token": EMBED_TOKEN}).text
 
     assert "374" in html and "373.8" not in html
+
+
+def test_the_balance_endpoint_subtracts_every_minus_metric(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    payload = {"data": {"metrics": [
+        {"name": "dietary_energy", "units": "kcal", "data": [
+            {"date": "2026-07-11T12:00:00-04:00", "qty": 2000.0},
+            {"date": "2026-07-12T12:00:00-04:00", "qty": 1800.0}]},
+        {"name": "basal_energy_burned", "units": "kcal", "data": [
+            {"date": "2026-07-11T12:00:00-04:00", "qty": 2100.0},
+            {"date": "2026-07-12T12:00:00-04:00", "qty": 2100.0}]},
+        {"name": "active_energy", "units": "kcal", "data": [
+            {"date": "2026-07-11T12:00:00-04:00", "qty": 900.0},
+            {"date": "2026-07-12T12:00:00-04:00", "qty": 800.0}]},
+    ]}}
+    assert client.post("/v1/exports", headers=HEADERS, json=payload).status_code == 201
+
+    html = client.get("/v1/render/stat", params=[
+        ("metric", "dietary_energy"), ("stat", "balance"),
+        ("minus", "basal_energy_burned"), ("minus", "active_energy"),
+        ("window", 7), ("embed_token", EMBED_TOKEN)]).text
+
+    # 3,800 eaten against 5,900 burned.
+    assert "2,100" in html
+    assert 'class="value good"' in html and "deficit" in html
+    assert "over 2 days of 7" in html
 
 
 def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date, timedelta
 from math import ceil, floor, log10
 from string import Template
@@ -59,6 +60,10 @@ _PAD_R, _PAD_T = 14, 16
 _YGUT_GAP = 8.0    # between the y labels and the plot's left edge
 _XGUT = 21.0       # the strip below the plot that the x labels sit in
 _XGUT_GAP = 3.0    # between the plot's bottom edge and the x labels
+_KEYGUT = 20.0     # the strip above the plot the legend sits in
+# How close to the panel floor a y tick has to be to rest on it rather
+# than straddle it. A zero baseline puts one there every time.
+_FLOOR_TICK_SLACK = 0.6
 
 # Tooltip placement, in CSS pixels: how far it stays clear of the frame edge,
 # and how far it sits from the point it describes.
@@ -79,6 +84,14 @@ _BAR_SLOT_FILL = 0.62
 # would come out as an ellipse. These are sized to read as ~4px at a dashboard
 # card's proportions; the corner is decoration, so drifting a pixel is fine.
 _BAR_RX, _BAR_RY = 3.6, 3.2
+
+# Categorical fills available to a multi-series panel, in fixed order — never
+# cycled into a ninth hue. The steps come from the `dataviz` reference palette
+# and were checked with its validator in both modes, not chosen by eye: two
+# steps of one hue read as identical to full-colour vision (ΔE 9.5, under the
+# 15 floor), so the burn stack takes contrasting hues and the bar's own shape
+# carries the grouping.
+_SERIES_TONES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +176,44 @@ def window_change(
     return recent_mean, prior_mean, recent_mean - prior_mean
 
 
+def window_balance(
+    intake: Sequence[Point],
+    spend: Sequence[Sequence[Point]],
+    window_days: int,
+    anchor: date,
+) -> tuple[float, int] | None:
+    """Energy in minus energy out over a window, and the days it covered.
+
+    Negative is a deficit — less taken in than spent.
+
+    **Only days with an intake reading count.** Burn is recorded continuously
+    by the watch, so at 9am today there is a partial day of spend against an
+    unlogged breakfast; counting it would read as a several-hundred-calorie
+    deficit that is really just a meal nobody has entered yet. A day with no
+    intake logged is not a day of fasting, it is a day of missing data, and the
+    honest response is to leave it out and say how many days remain.
+
+    Returns ``(net, days)``, or ``None`` when no day in the window qualifies.
+    """
+    if window_days < 1:
+        return None
+    earliest = anchor - timedelta(days=window_days - 1)
+
+    eaten: dict[date, float] = {}
+    for day, value in intake:
+        if earliest <= day <= anchor:
+            eaten[day] = eaten.get(day, 0.0) + value
+    if not eaten:
+        return None
+
+    burned = 0.0
+    for series in spend:
+        for day, value in series:
+            if day in eaten:
+                burned += value
+    return sum(eaten.values()) - burned, len(eaten)
+
+
 def latest_reading(points: Sequence[Point]) -> Point | None:
     """The most recent reading, or None when there is nothing to report."""
     return max(points, key=lambda p: p[0]) if points else None
@@ -225,6 +276,43 @@ def parse_series(series: list[dict[str, Any]]) -> list[Point]:
 
 def _path(points: Sequence[Point], sx, sy) -> str:
     return "M " + " L ".join(f"{sx(d):.1f},{sy(v):.1f}" for d, v in points)
+
+
+@dataclass(frozen=True)
+class Series:
+    """One metric's readings, with everything needed to draw and label it."""
+
+    points: list[Point]
+    unit: str
+    label: str
+    integral: bool
+    stack: str | None
+
+
+def _stacks_of(panel: Sequence[Series]) -> list[list[Series]]:
+    """The panel's series grouped by stack name, in first-appearance order.
+
+    A series with no stack name is its own stack, so an ungrouped panel comes
+    back as one stack of one — which is what every chart before this was.
+    """
+    order: list[str] = []
+    grouped: dict[str, list[Series]] = {}
+    for index, item in enumerate(panel):
+        key = item.stack if item.stack else f"\x00{index}"
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = []
+        grouped[key].append(item)
+    return [grouped[key] for key in order]
+
+
+def _stack_totals(stack: Sequence[Series]) -> dict[date, float]:
+    """Day-by-day sum of a stack, which is what its bar's height must fit."""
+    totals: dict[date, float] = {}
+    for item in stack:
+        for day, value in item.points:
+            totals[day] = totals.get(day, 0.0) + value
+    return totals
 
 
 # Tick labels are 12px tabular-nums, so every digit takes one fixed advance
@@ -297,9 +385,9 @@ $palette
      against the plot's coordinates — the SVG, the x ticks, the hover marker —
      lives in here; only the y labels and the tooltip sit outside it. */
   #plot{position:absolute;left:calc(var(--ygut) + ${ygutgap}px);right:0;
-        top:0;bottom:${xgut}px}
+        top:${keygut}px;bottom:${xgut}px}
   svg{position:absolute;inset:0;width:100%;height:100%;display:block}
-  .grid,.axis,.raw,.trend,.cross{vector-effect:non-scaling-stroke}
+  .grid,.axis,.raw,.trend,.cross,.over{vector-effect:non-scaling-stroke}
   .grid{stroke:var(--grid);stroke-width:1}
   .axis{stroke:var(--axis);stroke-width:1}
   .raw{fill:none;stroke:var(--raw);stroke-width:1.5;
@@ -311,6 +399,21 @@ $palette
      and its width and height are the encoding — they are *supposed* to scale
      with the frame. */
   .bar{fill:var(--trend)}
+  /* Categorical fills for a multi-series panel, assigned in fixed order. */
+  .bar.s1{fill:var(--series-1)} .bar.s2{fill:var(--series-2)}
+  .bar.s3{fill:var(--series-3)}
+  .raw.s1,.over.s1{stroke:var(--series-1)} .raw.s2,.over.s2{stroke:var(--series-2)}
+  .raw.s3,.over.s3{stroke:var(--series-3)}
+  /* An overlaid stack: a line over the bars, so it needs the weight to read
+     against them rather than the muted treatment a raw series gets. */
+  .over{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+  .raw.s1,.raw.s2,.raw.s3{stroke-width:2}
+  #key{position:absolute;top:0;left:0;right:0;display:flex;flex-wrap:wrap;
+       gap:4px 14px;font-size:12px;color:var(--ink-2);pointer-events:none}
+  #key span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  #key i{width:9px;height:9px;border-radius:2px;flex:none}
+  #key .k1{background:var(--series-1)} #key .k2{background:var(--series-2)}
+  #key .k3{background:var(--series-3)}
   /* The hover marker for bars, the counterpart of .hdot for lines. A wash of
      ink over the bar rather than a colour change, so it reads the same in both
      themes without introducing a second hue. */
@@ -321,6 +424,7 @@ $palette
   /* Right-aligned against the plot's left edge, so the widest label is always
      fully on screen no matter how narrow the card gets. */
   .ytick{transform:translate(-100%,-50%);left:var(--ygut)}
+  .ytick.floor{transform:translate(-100%,-100%)}
   :root{--ygut:${ygut}px}
   /* Below the plot, in the strip #plot is inset by — not inside it. A label
      with a fixed height cannot share a box whose height is a percentage. */
@@ -386,11 +490,21 @@ $body
     var many = d.series.length > 1;
     var html = '<span>' + p.label + '</span>', anchor = null;
     for (var s = 0; s < d.series.length; s++){
-      var v = p.v[s], meta = d.series[s], mark = marks[s];
-      if (!v){ if (mark) mark.style.opacity = 0; continue; }
+      // With several series in one panel there is one marker for the panel,
+      // not one per series, and it covers the whole day rather than one bar —
+      // the day is what the tooltip is reporting.
+      var v = p.v[s], meta = d.series[s];
+      var mark = meta.panel === undefined ? marks[s] : marks[meta.panel];
+      if (!v){ if (mark && meta.panel === undefined) mark.style.opacity = 0; continue; }
       var vy = v.ty !== null ? v.ty : v.ry;
       if (anchor === null) anchor = vy;
-      if (mark && bars){
+      if (mark && bars && meta.panel !== undefined){
+        mark.style.left = (fracX(p.x - d.slot / 2) * 100) + '%';
+        mark.style.width = (fracX(d.slot) * 100) + '%';
+        mark.style.top = '0%';
+        mark.style.height = '100%';
+        mark.style.opacity = 0.10;
+      } else if (mark && bars){
         // Cover the bar itself: its slot in x, and value-to-floor in y.
         mark.style.left = (fracX(p.x - d.bw / 2) * 100) + '%';
         mark.style.width = (fracX(d.bw) * 100) + '%';
@@ -481,8 +595,11 @@ def render_chart_page(
     title: str = "Weight",
     series_labels: Sequence[str] | None = None,
     series_units: Sequence[str] | None = None,
+    series_stacks: Sequence[str] | None = None,
     window: int = 7,
     kind: str = "line",
+    layout: str = "grouped",
+    legend: bool | None = None,
     baseline: float | None = None,
     refresh_minutes: int = 30,
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
@@ -506,6 +623,19 @@ def render_chart_page(
     ``baseline`` pins the floor of every panel's y-axis. Left unset the axis
     zooms to the data, which reads day-to-day variation; ``baseline=0`` makes
     bar lengths proportional to their values instead.
+
+    ``series_stacks`` names a stack per summary and changes the shape of the
+    chart: every summary then shares **one** panel and one y-axis, and those
+    naming the same stack are drawn as segments of a single bar. Sharing an
+    axis is only honest when the measures share a unit, which is the caller's
+    assertion to make, not this function's — it is what grouping them means.
+    ``layout`` then decides how the stacks are arranged:
+
+    * ``"grouped"`` — one bar per stack, side by side within the day's slot.
+    * ``"overlay"`` — the first stack draws as bars, the rest as lines over it.
+
+    ``legend`` defaults to on only when a panel holds more than one series;
+    with one series the title says what it is and a key would be noise.
     """
     if isinstance(summaries, dict):
         summaries = [summaries]
@@ -514,20 +644,38 @@ def render_chart_page(
     # literal string "count", which reads as noise beside the number, so an
     # empty override has to be able to drop it. `None` keeps what was stored.
     overrides = list(series_units or []) + [None] * len(summaries)
-    panels = [
-        (parse_series(s.get("series") or []),
-         (s.get("unit") or "") if override is None else override,
-         label,
-         # From the stored unit, not the displayed one: `unit=` blanks the
-         # label but the number is still a tally.
-         is_count_unit(s.get("unit")))
-        for s, label, override in zip(
+    stacks = list(series_stacks or []) + [None] * len(summaries)
+    series = [
+        Series(points=parse_series(s.get("series") or []),
+               unit=(s.get("unit") or "") if override is None else override,
+               label=label,
+               # From the stored unit, not the displayed one: `unit=` blanks
+               # the label but the number is still a tally.
+               integral=is_count_unit(s.get("unit")),
+               stack=stack)
+        for s, label, override, stack in zip(
             summaries,
             list(series_labels or []) + [""] * len(summaries),
             overrides,
+            stacks,
         )
     ]
-    panels = [p for p in panels if p[0]]  # a panel with no readings is no panel
+    series = [s for s in series if s.points]  # nothing to draw, nothing to draw
+
+    # Stacked series share one panel and one y-axis; otherwise each metric gets
+    # a panel of its own, which is what every chart did before stacking existed.
+    if any(s.stack for s in series):
+        panels = [series] if series else []
+        # A stacked bar says its segments sum to its height. Cut the axis off
+        # above zero and only the bottom segment is foreshortened, so the split
+        # between the parts misstates their ratio — 2,123 resting against 1,072
+        # active reads as 1.5:1 rather than 2:1. Zoom is a defensible default
+        # for a single series and a wrong one here, so stacks start at zero
+        # unless the caller says otherwise.
+        if baseline is None:
+            baseline = 0.0
+    else:
+        panels = [[s] for s in series]
 
     if not panels:
         body = '<div class="empty">No readings in this period.</div>'
@@ -535,14 +683,16 @@ def render_chart_page(
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
-            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP, xgut=_XGUT, xgutgap=_XGUT_GAP,
+            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP,
+            xgut=_XGUT, xgutgap=_XGUT_GAP, keygut=0,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
 
     # One shared x scale across every panel.
-    first = min(points[0][0] for points, *_ in panels)
-    last = max(points[-1][0] for points, *_ in panels)
+    every_series = [item for panel in panels for item in panel]
+    first = min(item.points[0][0] for item in every_series)
+    last = max(item.points[-1][0] for item in every_series)
     day_span = max((last - first).days, 1)
 
     plot_w = _W - _PAD_R
@@ -572,12 +722,19 @@ def render_chart_page(
     gutter_px = _MIN_YGUT
     by_day: list[dict[date, dict[str, Any]]] = []
 
-    for index, (points, unit, label, integral) in enumerate(panels):
+    for index, panel in enumerate(panels):
         top = _PAD_T + index * (panel_h + gap)
         bottom = top + panel_h
 
-        trend = rolling_trend(points, window) if window >= 1 else []
-        values = [v for _, v in points] + [v for _, v in trend]
+        groups = _stacks_of(panel)
+        totals = [_stack_totals(group) for group in groups]
+        trends = [rolling_trend(item.points, window) if window >= 1 else []
+                  for item in panel]
+
+        # The axis has to fit the *stack totals*, not the individual segments:
+        # a bar is as tall as its parts together.
+        values = [v for total in totals for v in total.values()]
+        values += [v for trend in trends for _, v in trend]
         low, high = min(values), max(values)
         # A little headroom so the extremes are not welded to the frame.
         margin = (high - low) * 0.12 or 1.0
@@ -599,50 +756,94 @@ def render_chart_page(
             # "15,000" needs half again the room "190" does, and it sets the
             # plot's inset too — that is what keeps the two from colliding.
             gutter_px = max(gutter_px, _tick_label_px(text) + 2)
+            # A tick sitting on the panel's floor — which a zero baseline
+            # always produces — is centred on a line at the very bottom of the
+            # plot, so half the label drops into the strip below. That one
+            # rests on the line instead of straddling it.
+            on_floor = " floor" if abs(y - bottom) < _FLOOR_TICK_SLACK else ""
             y_labels.append(
-                f'<div class="tick ytick" style="top:{y / _H * 100:.3f}%">'
+                f'<div class="tick ytick{on_floor}" style="top:{y / _H * 100:.3f}%">'
                 f'{text}</div>')
 
         parts.append(f'<line class="axis" x1="0" y1="{bottom:.1f}" '
                      f'x2="{plot_w}" y2="{bottom:.1f}"/>')
 
-        if kind == "bar":
-            # Anchored to the axis floor. A reading below an explicit baseline
-            # has no bar to draw rather than one hanging under the axis.
-            floor = sy(low)
-            for day, value in points:
-                y = sy(value)
-                height = floor - y
-                if height <= 0:
-                    continue
-                parts.append(
-                    f'<rect class="bar" x="{sx(day) - bar_w / 2:.1f}" y="{y:.1f}" '
-                    f'width="{bar_w:.1f}" height="{height:.1f}" '
-                    f'rx="{_BAR_RX}" ry="{_BAR_RY}"/>')
-        else:
-            for run in split_on_gaps(points, max_gap_days):
-                if len(run) > 1:
-                    parts.append(f'<path class="raw" d="{_path(run, sx, sy)}"/>')
-        for run in split_on_gaps(trend, max_gap_days):
-            if len(run) > 1:
-                parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
+        floor = sy(low)
+        # Bars share the slot between the stacks when grouped; in overlay mode
+        # only the first stack is bars, so it keeps the full width.
+        bar_count = len(groups) if layout == "grouped" else 1
+        slice_w = bar_w / bar_count
+        multi = len(panel) > 1
 
-        meta: dict[str, Any] = {"unit": unit, "label": label}
-        if kind == "bar":
-            # Where the hover overlay's bottom edge sits, per panel.
-            meta["y0"] = round(sy(low), 1)
-        series_meta.append(meta)
-        trend_by_day = dict(trend)
-        by_day.append({
-            d: {
-                "ry": round(sy(v), 1),
-                "ty": (round(sy(trend_by_day[d]), 1) if d in trend_by_day else None),
-                "rv": _readout(v, integral),
-                "tv": (_readout(trend_by_day[d], integral)
-                       if d in trend_by_day else None),
-            }
-            for d, v in points
-        })
+        for group_index, group in enumerate(groups):
+            as_bars = kind == "bar" and (layout == "grouped" or group_index == 0)
+            # Left edge of this stack's bar within the day's slot.
+            offset = (group_index - (bar_count - 1) / 2) * slice_w if as_bars else 0.0
+            # Segments are drawn bottom-up, each starting where the last ended.
+            below: dict[date, float] = {}
+
+            for item in group:
+                position = panel.index(item)
+                tone = f" s{position % _SERIES_TONES + 1}" if multi else ""
+                if as_bars:
+                    # Anchored to the axis floor. A reading below an explicit
+                    # baseline has no bar rather than one hanging under it.
+                    for day, value in item.points:
+                        base = below.get(day, 0.0)
+                        y = sy(base + value)
+                        height = min(sy(base), floor) - y
+                        if height <= 0:
+                            continue
+                        x = sx(day) - bar_w / 2 + offset
+                        parts.append(
+                            f'<rect class="bar{tone}" x="{x:.1f}" y="{y:.1f}" '
+                            f'width="{slice_w:.1f}" height="{height:.1f}" '
+                            f'rx="{_BAR_RX}" ry="{_BAR_RY}"/>')
+                        below[day] = base + value
+                elif kind == "bar":
+                    # An overlaid stack: its running total drawn as a line.
+                    running = sorted((d, below.get(d, 0.0) + v) for d, v in item.points)
+                    for run in split_on_gaps(running, max_gap_days):
+                        if len(run) > 1:
+                            parts.append(
+                                f'<path class="over{tone}" d="{_path(run, sx, sy)}"/>')
+                    for day, value in item.points:
+                        below[day] = below.get(day, 0.0) + value
+                else:
+                    for run in split_on_gaps(item.points, max_gap_days):
+                        if len(run) > 1:
+                            parts.append(
+                                f'<path class="raw{tone}" d="{_path(run, sx, sy)}"/>')
+
+        for position, item in enumerate(panel):
+            trend = trends[position]
+            for run in split_on_gaps(trend, max_gap_days):
+                if len(run) > 1:
+                    parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
+
+            meta: dict[str, Any] = {"unit": item.unit, "label": item.label}
+            if kind == "bar":
+                # Where the hover overlay's bottom edge sits, per panel.
+                meta["y0"] = round(floor, 1)
+            if multi:
+                # Which panel this belongs to, and which tone drew it — the
+                # hover and the legend both need them once a panel holds more
+                # than one series.
+                meta["panel"] = index
+                meta["tone"] = position % _SERIES_TONES + 1
+            series_meta.append(meta)
+            trend_by_day = dict(trend)
+            by_day.append({
+                d: {
+                    "ry": round(sy(v), 1),
+                    "ty": (round(sy(trend_by_day[d]), 1)
+                           if d in trend_by_day else None),
+                    "rv": _readout(v, item.integral),
+                    "tv": (_readout(trend_by_day[d], item.integral)
+                           if d in trend_by_day else None),
+                }
+                for d, v in item.points
+            })
 
     # X ticks once, under the bottom panel.
     # No tick marks: the plot now ends exactly at its baseline, so a stub drawn
@@ -667,6 +868,19 @@ def render_chart_page(
 
     marker = "hbar" if kind == "bar" else "hdot"
     markers = "".join(f'<div class="{marker}"></div>' for _ in panels)
+
+    # A key only where identity cannot be inferred. With one series the title
+    # names it; with three fills in one panel nothing else says which is which,
+    # and the light-mode aqua sits under 3:1 against the surface, which the
+    # `dataviz` checks say obliges a visible label rather than colour alone.
+    show_key = any(len(panel) > 1 for panel in panels) if legend is None else legend
+    key = ""
+    if show_key and any(m.get("tone") for m in series_meta):
+        entries = "".join(
+            f'<span><i class="k{m["tone"]}"></i>{m["label"] or m["unit"]}</span>'
+            for m in series_meta if m.get("tone"))
+        key = f'<div id="key">{entries}</div>'
+
     # Anything measured in plot coordinates goes inside #plot; the y labels sit
     # outside it, in the gutter that #plot is inset by.
     body = (f'<div id="plot">'
@@ -674,9 +888,9 @@ def render_chart_page(
             f'aria-label="{title}">{"".join(parts)}</svg>'
             f'{"".join(x_labels)}{markers}'
             f'</div>'
-            f'{"".join(y_labels)}<div id="tip"></div>')
+            f'{"".join(y_labels)}{key}<div id="tip"></div>')
 
-    every_day = sorted({d for points, *_ in panels for d, _ in points})
+    every_day = sorted({d for item in every_series for d, _ in item.points})
     payload = {
         "window": window,
         "series": series_meta,
@@ -684,9 +898,9 @@ def render_chart_page(
             {
                 "x": round(sx(d), 1),
                 "label": d.strftime("%a %-d %b"),
-                # One entry per panel, null where that series has no reading
+                # One entry per series, null where that series has no reading
                 # for the day, so the hover can skip it.
-                "v": [panel.get(d) for panel in by_day],
+                "v": [readings.get(d) for readings in by_day],
             }
             for d in every_day
         ],
@@ -696,11 +910,15 @@ def render_chart_page(
         # the line chart's payload exactly as it was.
         payload["kind"] = kind
         payload["bw"] = round(bar_w, 1)
+    if any(len(panel) > 1 for panel in panels):
+        # A panel of several series highlights the whole day's slot, not one
+        # bar, so the hover needs the slot rather than the bar width.
+        payload["slot"] = round(slot_w, 1)
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
         vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1), ygutgap=_YGUT_GAP,
-        xgut=_XGUT, xgutgap=_XGUT_GAP,
+        xgut=_XGUT, xgutgap=_XGUT_GAP, keygut=_KEYGUT if key else 0,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )

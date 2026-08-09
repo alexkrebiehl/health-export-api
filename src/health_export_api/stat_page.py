@@ -63,6 +63,7 @@ $palette
   .note{color:var(--muted);font-size:min(12cqh,${note_cqw}cqw);line-height:1.15;
         white-space:nowrap}
   .good{color:var(--good)}
+  .bad{color:var(--bad)}
   .empty{color:var(--muted)}
 </style>
 </head>
@@ -210,6 +211,48 @@ def render_change_tile(
     )
     tone = "good" if improving else ""
     return _render(label, value, unit, f"vs previous {window_days} days",
+                   tone, refresh_minutes, margin, align)
+
+
+def render_balance_tile(
+    balance: tuple[float, int] | None,
+    *,
+    unit: str = "",
+    label: str = "7-day balance",
+    window_days: int = 7,
+    refresh_minutes: int = 30,
+    margin: float = 0.0,
+    align: Align = "left",
+    integral: bool = False,
+) -> str:
+    """Tile showing energy in minus energy out: a deficit or a surplus.
+
+    Two-sided colour, unlike :func:`render_change_tile`. That tile stays
+    neutral because whether a metric rising is good depends on the goal rather
+    than the metric — but here the goal is the thing being measured. A deficit
+    is what a calorie balance is watched *for*, so green and red mean something
+    specific rather than being borrowed approval.
+
+    Colour is never the only channel: the word "deficit" or "surplus" is in the
+    note, and the arrow carries direction on its own.
+    """
+    if balance is None:
+        return _render(label, "—", "", "No days with intake logged",
+                       "", refresh_minutes, margin, align)
+
+    net, days = balance
+    deficit = net < 0
+    arrow = "↓" if deficit else ("↑" if net > 0 else "→")
+    value = f"{arrow} {_fmt(abs(net), integral)}"
+
+    word = "deficit" if deficit else ("surplus" if net else "even")
+    # A window shorter than asked for means days went unlogged; saying so beats
+    # presenting a 3-day figure as though it were a week.
+    covered = f"over {days} day{'' if days == 1 else 's'}"
+    if days < window_days:
+        covered += f" of {window_days}"
+    tone = "good" if deficit else ("bad" if net else "")
+    return _render(label, value, unit, f"{word} · {covered}",
                    tone, refresh_minutes, margin, align)
 
 

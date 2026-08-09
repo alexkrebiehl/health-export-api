@@ -20,21 +20,24 @@ PALETTE_CSS = """
     color-scheme: light;
     --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
     --grid:#e1e0d9; --axis:#c3c2b7; --raw:#898781; --trend:#2a78d6;
-    --good:#006300;
+    --good:#006300; --bad:#d03b3b;
+    --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       color-scheme: dark;
       --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
       --grid:#2c2c2a; --axis:#383835; --raw:#898781; --trend:#3987e5;
-      --good:#0ca30c;
+      --good:#0ca30c; --bad:#d03b3b;
+      --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
     }
   }
   :root[data-theme="dark"]{
     color-scheme: dark;
     --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --axis:#383835; --raw:#898781; --trend:#3987e5;
-    --good:#0ca30c;
+    --good:#0ca30c; --bad:#d03b3b;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
   }
 """
 

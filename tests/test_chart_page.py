@@ -302,6 +302,143 @@ def test_count_readouts_carry_no_decimal_at_any_size() -> None:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Stacks: several series sharing one panel
+# ---------------------------------------------------------------------------
+
+
+def energy() -> list[dict[str, Any]]:
+    """Resting and active burn, plus intake — the Diet card's three series."""
+    resting = summary({f"2026-07-{i:02d}": 2000.0 + i * 10 for i in range(1, 8)},
+                      unit="kcal")
+    active = summary({f"2026-07-{i:02d}": 1000.0 + i * 20 for i in range(1, 8)},
+                     unit="kcal")
+    eaten = summary({f"2026-07-{i:02d}": 1800.0 + i * 30 for i in range(1, 8)},
+                    unit="kcal")
+    return [resting, active, eaten]
+
+
+def stacked(**kwargs: Any) -> str:
+    return render_chart_page(
+        energy(), kind="bar", window=0,
+        series_labels=["Resting", "Active", "Eaten"],
+        series_stacks=["burn", "burn", "eaten"], **kwargs)
+
+
+def test_stacked_series_share_one_panel_and_one_axis() -> None:
+    """Three measures in the same unit belong on one scale.
+
+    Without a stack each metric gets its own panel and y-axis, which is right
+    for measures that cannot be compared. These are all kcal, so splitting them
+    would make the comparison the card exists for impossible to read.
+    """
+    data = embedded(stacked())
+
+    # One panel: every series reports panel 0.
+    assert {s["panel"] for s in data["series"]} == {0}
+    assert [s["label"] for s in data["series"]] == ["Resting", "Active", "Eaten"]
+    assert all(len(p["v"]) == 3 for p in data["points"])
+    # One axis: a single baseline, not three.
+    assert stacked().count('class="axis"') == 1
+
+
+def test_a_stacked_bar_is_as_tall_as_its_parts_together() -> None:
+    html = stacked()
+    drawn = bars(html)
+
+    # Two stacks over seven days: 7 * 2 segments for burn, 7 for intake.
+    assert len(drawn) == 21
+    # The burn stack's two segments meet: the top of one is the bottom of the
+    # next, with no gap and no overlap.
+    by_x: dict[float, list[dict[str, float]]] = {}
+    for b in drawn:
+        by_x.setdefault(round(b["x"], 1), []).append(b)
+    burn = [v for v in by_x.values() if len(v) == 2]
+    assert len(burn) == 7, "expected seven two-segment burn bars"
+    for segments in burn:
+        segments.sort(key=lambda b: b["y"])
+        upper, lower = segments
+        assert upper["y"] + upper["height"] == pytest.approx(lower["y"], abs=0.2)
+
+
+def test_a_stack_starts_at_zero_so_its_segments_keep_their_ratio() -> None:
+    """Zooming the axis is right for one series and wrong for a stack.
+
+    Truncating the base foreshortens only the bottom segment, so the split
+    between the parts misstates their ratio — which is the one thing stacking
+    is for. Resting 2,010 against active 1,020 must read as roughly 2:1.
+    """
+    drawn = bars(stacked())
+    by_x: dict[float, list[dict[str, float]]] = {}
+    for b in drawn:
+        by_x.setdefault(round(b["x"], 1), []).append(b)
+    segments = sorted(next(v for v in by_x.values() if len(v) == 2),
+                      key=lambda b: b["y"], reverse=True)
+    resting, active = segments
+
+    assert resting["height"] / active["height"] == pytest.approx(2010 / 1020, abs=0.05)
+
+    # An explicit baseline still wins — the default is a default, not a rule.
+    zoomed = bars(stacked(baseline=1500))
+    assert min(b["height"] for b in zoomed) < min(b["height"] for b in drawn)
+
+
+def test_grouped_stacks_sit_side_by_side_without_overlapping() -> None:
+    drawn = bars(stacked(layout="grouped"))
+
+    xs = sorted({round(b["x"], 1) for b in drawn})
+    # Two distinct x positions per day, and the burn bar's right edge stops
+    # before the intake bar's left edge.
+    assert len(xs) == 14
+    widths = {round(b["width"], 1) for b in drawn}
+    assert len(widths) == 1, "grouped stacks share one slice width"
+    assert xs[0] + widths.pop() <= xs[1] + 0.01
+
+
+def test_overlay_draws_the_later_stack_as_a_line_over_the_bars() -> None:
+    html = stacked(layout="overlay")
+
+    # The burn stack keeps the full bar width; intake becomes a line.
+    drawn = bars(html)
+    assert len(drawn) == 14, "only the first stack is drawn as bars"
+    assert html.count('class="over') == 1
+    # And it uses the full slot rather than half of it.
+    grouped_width = bars(stacked(layout="grouped"))[0]["width"]
+    assert drawn[0]["width"] > grouped_width
+
+
+def test_each_series_in_a_panel_gets_its_own_fill() -> None:
+    html = stacked()
+
+    assert 'class="bar s1"' in html
+    assert 'class="bar s2"' in html
+    assert 'class="bar s3"' in html
+    # A lone series keeps the plain class, so existing cards are untouched.
+    assert 'class="bar"' in render_chart_page(steps_only(), kind="bar", window=0)
+
+
+def test_the_legend_appears_only_where_identity_cannot_be_inferred() -> None:
+    """Standing preference is no chrome; this is the one chart that needs it.
+
+    Three fills in one panel say nothing about which is which, and the
+    light-mode aqua sits under 3:1 against the surface — which the dataviz
+    checks say obliges a visible label rather than colour alone.
+    """
+    assert 'id="key"' in stacked()
+    assert "Resting" in stacked() and "Eaten" in stacked()
+
+    # Off on request, and off by default everywhere it was off before.
+    assert 'id="key"' not in stacked(legend=False)
+    assert 'id="key"' not in render_chart_page(steps_only(), kind="bar", window=0)
+    assert 'id="key"' not in render_chart_page(steps_and_distance())
+
+
+def test_the_plot_makes_room_for_the_legend_only_when_there_is_one() -> None:
+    # A legend drawn over the plot would sit on top of the tallest bars.
+    assert re.search(r"#plot\{[^}]*top:[1-9][\d.]*px", stacked())
+    assert re.search(r"#plot\{[^}]*top:0px", stacked(legend=False))
+
+
 def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
     html = render_chart_page(steps_and_distance(), series_units=["", "mi"])
 
@@ -321,7 +458,8 @@ def bars(html: str) -> list[dict[str, float]]:
     return [
         # The leading space matters: without it `rx=` matches as `x=`.
         {k: float(v) for k, v in re.findall(r' (x|y|width|height)="([\d.-]+)"', tag)}
-        for tag in re.findall(r'<rect class="bar"[^/]*/>', html)
+        # `bar` alone on a lone series, `bar s2` once a panel holds several.
+        for tag in re.findall(r'<rect class="bar[^"]*"[^/]*/>', html)
     ]
 
 

@@ -271,7 +271,10 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 | `date_range` / `start_date` / `end_date` | `last 90 days` | Same syntax as the health summary. |
 | `window` | `7` | Rolling-trend window in days. `0` draws the readings only. |
 | `kind` | `line` | `line` or `bar`, for every panel in the chart. See below. |
-| `baseline` | unset | Pins the y-axis floor. Unset, the axis zooms to the data. |
+| `stack` | unset | Names the stack a metric belongs to. Repeatable, one per `metric`. See below. |
+| `layout` | `grouped` | `grouped` or `overlay` — how stacks are arranged. |
+| `legend` | auto | Show the key. On by default only when a panel holds several series. |
+| `baseline` | unset | Pins the y-axis floor. Unset, the axis zooms to the data (but see stacks). |
 | `title` | derived from `metric` | Used as the page title. |
 | `refresh_minutes` | `30` | How often the page reloads itself. |
 | `embed_token` | — | Same token as the map page. |
@@ -297,6 +300,21 @@ The daily line **breaks when consecutive readings are more than 3 days apart**, 
 
 A bar chart uses a band x-scale, giving each day a slot and centring its bar in it, so the first and last bars sit fully inside the frame. Hovering highlights the bar rather than drawing a crosshair through it.
 
+#### Several series on one axis
+
+`stack` is repeatable alongside `metric` and names the stack each one belongs to. Supplying it changes the shape of the chart: every metric moves into **one panel on one shared y-axis**, and metrics naming the same stack are drawn as segments of a single bar.
+
+Sharing an axis is only honest when the measures share a unit — that is the caller's assertion, and it is exactly what grouping them means. Steps and miles must stay in separate panels (omit `stack`); resting energy, active energy and dietary energy are all kcal, so they belong together.
+
+`layout` arranges the stacks:
+
+- **`grouped`** — one bar per stack, side by side inside the day's slot. Best for a direct comparison: burn against intake reads as the height gap between two bars.
+- **`overlay`** — the first stack draws as bars, later stacks as lines over them. Better for following one series' trend across the window.
+
+`legend` follows: a key appears above the plot when a panel holds more than one series, because nothing else says which fill is which. Single-metric and multi-panel cards stay bare as before. `legend=false` turns it off. The fills come from the `dataviz` reference palette and were checked with its validator in both modes — two steps of one hue were tried first and rejected, measuring ΔE 9.5 against the 15 floor for full-colour vision.
+
+**Stacks start at zero unless you say otherwise.** A stacked bar claims its segments sum to its height; cut the axis off above zero and only the bottom segment is foreshortened, so the split between the parts misstates their ratio — 2,123 resting against 1,072 active reads as 1.5:1 rather than 2:1. Zoom-to-data is the right default for one series and the wrong one here, so `baseline` defaults to `0` for a stacked chart. Pass it explicitly to override.
+
 #### The y axis
 
 **Zoomed to the data by default, for both marks.** Body weight moves a few pounds around ~190, and a zero baseline would flatten every real movement; the same is true of a step count that never goes near zero.
@@ -317,6 +335,14 @@ url: https://your-host/v1/render/chart?metric=step_count&unit=&title=Steps&kind=
 grid_options: {columns: full, rows: 5}
 ```
 
+Three series on one axis — two stacked as burn, one beside it as intake:
+
+```yaml
+type: iframe
+url: https://your-host/v1/render/chart?metric=basal_energy_burned&stack=burn&label=Resting&unit=kcal&metric=active_energy&stack=burn&label=Active&unit=kcal&metric=dietary_energy&stack=eaten&label=Eaten&unit=kcal&kind=bar&window=0&date_range=last+7+days&title=Diet&embed_token=…
+grid_options: {columns: 24, rows: 5}
+```
+
 Two metrics stacked in one card, a panel each:
 
 ```yaml
@@ -332,8 +358,9 @@ grid_options: {columns: full, rows: 6}
 | Parameter | Default | Description |
 |---|---|---|
 | `metric` | required | e.g. `weight_body_mass` |
-| `stat` | `latest` | `latest` (most recent reading) or `change` (week over week) |
-| `window` | `7` | Days per half, for `change` |
+| `stat` | `latest` | `latest` (most recent reading), `change` (week over week), or `balance` |
+| `minus` | — | Metrics to subtract, for `balance`. Repeatable. |
+| `window` | `7` | Days per half, for `change`; days in the window, for `balance` |
 | `label` | `Current` / `Weekly trend` | Tile label, sentence case |
 | `unit` | the stored unit | Override the unit beside the number. Empty (`unit=`) drops it. |
 | `good_direction` | `none` | `up`, `down`, or `none` — see below |
@@ -343,6 +370,10 @@ grid_options: {columns: full, rows: 6}
 | `embed_token` | — | Same token as the other embedded pages |
 
 `change` compares **two adjacent windows of equal length in calendar days** — `[t-6, t]` against `[t-13, t-7]` at the default. Equal spans matter: unequal ones weight the two means differently and bias the comparison. It renders an empty state rather than a number when either window has no readings.
+
+`balance` subtracts every `minus` metric from `metric` across the window — energy in against energy out. Negative renders green as a deficit, positive red as a surplus. This is the one tile that colours both directions: the change tile stays neutral because whether a metric rising is good depends on the goal, but here the goal *is* what's being measured. Colour is still never the only channel — the note says "deficit" or "surplus" and the arrow carries direction.
+
+**Days with no `metric` reading are left out of the window**, and the note says how many days remain. Burn is recorded continuously by the watch, so at 9am there is a partial day of spend against an unlogged breakfast; counting it would report a few hundred calories of deficit that are really just a meal nobody has entered yet. A day with no intake logged is missing data, not a day of fasting.
 
 `good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
 

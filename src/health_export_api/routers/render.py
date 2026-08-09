@@ -23,6 +23,7 @@ from health_export_api.chart_page import (
     latest_reading,
     parse_series,
     render_chart_page,
+    window_balance,
     window_change,
 )
 from health_export_api.map_page import render_map_page
@@ -30,6 +31,7 @@ from health_export_api.provider import DataProvider
 from health_export_api.routers import domain_errors
 from health_export_api.stat_page import (
     MAX_MARGIN,
+    render_balance_tile,
     render_change_tile,
     render_latest_tile,
 )
@@ -97,11 +99,14 @@ def build_render_router(
         metric: list[str] = Query(default=...),
         label: list[str] | None = Query(default=None),
         unit: list[str] | None = Query(default=None),
+        stack: list[str] | None = Query(default=None),
         date_range: str | None = Query(default=None),
         start_date: str | None = Query(default=None),
         end_date: str | None = Query(default=None),
         window: int = Query(default=7, ge=0, le=365),
         kind: str = Query(default="line", pattern="^(line|bar)$"),
+        layout: str = Query(default="grouped", pattern="^(grouped|overlay)$"),
+        legend: bool | None = Query(default=None),
         baseline: float | None = Query(default=None),
         title: str | None = Query(default=None),
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
@@ -118,6 +123,12 @@ def build_render_router(
         ``kind=bar`` suits a discrete daily total — a step count has no value
         between Tuesday and Wednesday for a line to interpolate to. ``baseline``
         pins the y-axis floor; unset, it zooms to the data.
+
+        ``stack`` is repeatable alongside ``metric`` and names the stack each
+        one belongs to. Supplying it puts every metric in a single panel on one
+        shared y-axis, with same-named metrics drawn as segments of one bar —
+        so only group measures that share a unit. ``layout`` then arranges the
+        stacks: ``grouped`` side by side, ``overlay`` bars then lines.
         """
         authorize_embed(authorization, embed_token)
         with domain_errors():
@@ -142,8 +153,11 @@ def build_render_router(
                 title=title or names[0],
                 series_labels=list(label or []) or names,
                 series_units=list(unit or []),
+                series_stacks=list(stack or []),
                 window=window,
                 kind=kind,
+                layout=layout,
+                legend=legend,
                 baseline=baseline,
                 refresh_minutes=refresh_minutes,
             )
@@ -152,7 +166,8 @@ def build_render_router(
     @router.get("/stat", response_class=HTMLResponse)
     def render_stat(
         metric: str,
-        stat: str = Query(default="latest", pattern="^(latest|change)$"),
+        stat: str = Query(default="latest", pattern="^(latest|change|balance)$"),
+        minus: list[str] | None = Query(default=None),
         window: int = Query(default=7, ge=1, le=365),
         label: str | None = Query(default=None),
         good_direction: str = Query(default="none", pattern="^(up|down|none)$"),
@@ -163,7 +178,12 @@ def build_render_router(
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
-        """A single stat tile for a metric, for embedding beside the chart."""
+        """A single stat tile for a metric, for embedding beside the chart.
+
+        ``stat=balance`` subtracts one or more ``minus`` metrics from
+        ``metric`` across the window — energy in against energy out. Only
+        days with a ``metric`` reading count; see :func:`window_balance`.
+        """
         authorize_embed(authorization, embed_token)
         today = provider.today
 
@@ -180,6 +200,28 @@ def build_render_router(
         # Read from the stored unit, so blanking the displayed one above still
         # formats a tally as a whole number.
         integral = is_count_unit(summary.get("unit"))
+
+        if stat == "balance":
+            spend = [
+                parse_series(
+                    provider.metric_summary(
+                        metric=name, start_date=span_start, end_date=today
+                    ).get("series") or []
+                )
+                for name in (minus or [])
+            ]
+            return HTMLResponse(
+                render_balance_tile(
+                    window_balance(points, spend, window, today),
+                    unit=label_unit,
+                    label=label or f"{window}-day balance",
+                    window_days=window,
+                    refresh_minutes=refresh_minutes,
+                    margin=margin,
+                    align=align,  # type: ignore[arg-type]
+                    integral=integral,
+                )
+            )
 
         if stat == "change":
             return HTMLResponse(
