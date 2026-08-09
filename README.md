@@ -283,6 +283,8 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 
 Values are comma-grouped and lose their decimal above 1,000, so a five-digit step count reads `9,611` rather than `9611.39`. Below that the decimal stays (`191.4 lb`), and sub-unit metrics keep enough digits to survive.
 
+Metrics stored in `count` or `kcal` are reported **whole at any magnitude** — a tally has no fractional part, and nobody quotes a 756.3 calorie deficit. Distance keeps its decimal, because 6.4 mi and 6 mi are different claims.
+
 `unit=` with no value exists because some stored units are noise: `step_count`'s unit is the literal string `count`, which adds nothing beside the number.
 
 The trend is a **rolling least-squares fit**, not a moving average: at each day with a reading, a straight line is fitted through the readings in the trailing window and evaluated at that day. It follows the local slope rather than averaging it away, so it turns with the data instead of lagging half a window behind it.

@@ -378,15 +378,20 @@ def _tick_label_px(text: str) -> float:
     return sum(_TICK_DIGIT_PX if ch.isdigit() else _TICK_THIN_PX for ch in text)
 
 
-def is_count_unit(unit: str | None) -> bool:
-    """Whether a metric's stored unit means "a number of things".
+# Units whose values are conventionally reported whole. `count` is a tally —
+# Apple Health's unit for step_count and flights_climbed — where a fraction is
+# an artefact of summing partial samples. `kcal` is not a tally, but nobody
+# reports a 756.3 calorie deficit either; the tenth is noise at that magnitude.
+_WHOLE_UNITS = {"count", "kcal"}
 
-    Apple Health records step_count and flights_climbed with the literal unit
-    "count". Those are tallies — a fractional part is an artefact of summing
-    partial samples, never something to show. Read from the *stored* unit, so
-    blanking the displayed one still formats the number correctly.
+
+def is_whole_unit(unit: str | None) -> bool:
+    """Whether a metric's stored unit is one reported without decimals.
+
+    Read from the *stored* unit, so blanking the displayed one still formats
+    the number correctly.
     """
-    return (unit or "").strip().lower() == "count"
+    return (unit or "").strip().lower() in _WHOLE_UNITS
 
 
 # Above this, readouts are comma-grouped and lose their decimal: "9,162"
@@ -704,7 +709,7 @@ def render_chart_page(
                label=label,
                # From the stored unit, not the displayed one: `unit=` blanks
                # the label but the number is still a tally.
-               integral=is_count_unit(s.get("unit")),
+               integral=is_whole_unit(s.get("unit")),
                stack=stack)
         for s, label, override, stack in zip(
             summaries,

@@ -284,6 +284,20 @@ def test_the_plot_stops_above_the_x_labels_at_any_card_height() -> None:
     assert ys and max(ys) <= 320
 
 
+def test_energy_is_reported_whole_like_a_count_is() -> None:
+    # "756.3 kcal" has the same defect a "373.8" step count did: the tenth is
+    # noise at that magnitude. Distance keeps its decimal — 6.4 mi is a real
+    # distinction, 6 mi is not the same claim.
+    energy = summary({"2026-07-01": 756.3, "2026-07-02": 3195.2}, unit="kcal")
+    distance = summary({"2026-07-01": 6.42, "2026-07-02": 7.5}, unit="mi")
+
+    assert [p["v"][0]["rv"] for p in embedded(render_chart_page(energy))["points"]] == [
+        "756", "3,195"
+    ]
+    assert [p["v"][0]["rv"]
+            for p in embedded(render_chart_page(distance))["points"]] == ["6.4", "7.5"]
+
+
 def test_count_readouts_carry_no_decimal_at_any_size() -> None:
     counted = summary({"2026-07-01": 373.8, "2026-07-02": 9162.4667}, unit="count")
     measured = summary({"2026-07-01": 5.1994, "2026-07-02": 6.02}, unit="mi")
