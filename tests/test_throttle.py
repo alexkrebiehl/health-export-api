@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from health_export_api.app import create_app, derive_embed_token
+from health_export_api.store import Store
 from health_export_api.throttle import QueueFull, RequestGate, TTLCache
 
 HEADERS = {"Authorization": "Bearer test-token"}
@@ -178,15 +179,48 @@ def coverage(client: TestClient, **params: Any) -> dict[str, Any]:
     return response.json()
 
 
-def test_identical_requests_are_served_from_cache(tmp_path: Path) -> None:
+def count_renders(monkeypatch) -> list[int]:
+    """Count how many requests actually reach the store's coverage query."""
+    calls: list[int] = []
+    original = Store.route_coverage_geojson
+
+    def counting(self, **kwargs):
+        calls.append(1)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(Store, "route_coverage_geojson", counting)
+    return calls
+
+
+def test_identical_requests_are_served_from_cache(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     ingest(client, "walk-1", CENTER_LAT)
-    first = coverage(client)
+    calls = count_renders(monkeypatch)
 
-    # New data landing after the first render must not show up while cached.
+    first = coverage(client)
+    second = coverage(client)
+
+    assert first == second
+    assert len(calls) == 1, "the repeat should not have reached the store"
+
+
+def test_an_ingest_drops_the_cache_so_new_data_shows_at_once(
+    tmp_path: Path,
+) -> None:
+    """The cache is invalidated by new data, not only by the clock.
+
+    Left purely time-bounded, a reading could sit in the store for the whole
+    TTL while the rendered tiles served the figures from before it — the JSON
+    endpoints current, the dashboard minutes behind, and nothing on the page
+    to say which you were looking at.
+    """
+    client = make_client(tmp_path)
+    ingest(client, "walk-1", CENTER_LAT)
+    assert coverage(client)["properties"]["workout_count"] == 1
+
     ingest(client, "walk-2", CENTER_LAT - 0.001)
-    assert coverage(client)["properties"]["workout_count"] == \
-        first["properties"]["workout_count"] == 1
+
+    assert coverage(client)["properties"]["workout_count"] == 2
 
 
 def test_a_zero_ttl_serves_fresh_results(tmp_path: Path) -> None:
@@ -199,18 +233,23 @@ def test_a_zero_ttl_serves_fresh_results(tmp_path: Path) -> None:
     assert coverage(client)["properties"]["workout_count"] == 2
 
 
-def test_presentation_options_do_not_change_the_cache_key(tmp_path: Path) -> None:
+def test_presentation_options_do_not_change_the_cache_key(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = make_client(tmp_path)
     ingest(client, "walk-1", CENTER_LAT)
     coverage(client)
-    ingest(client, "walk-2", CENTER_LAT - 0.001)
+    calls = count_renders(monkeypatch)
 
-    # weight/zoom_control only affect rendering, so the coverage behind the
-    # map page should still be the cached one.
+    # weight/zoom_control only affect rendering, so the map page must reuse the
+    # coverage already computed rather than recompute it per style tweak —
+    # which is the point of the cache, since changing a URL in Home Assistant
+    # re-requests on every keystroke.
     html = client.get("/v1/render/map",
                       params={**BOX, "embed_token": EMBED_TOKEN, "weight": 4}).text
 
     assert '"workout_count":1' in html.replace(" ", "")
+    assert calls == [], "a presentation option should not force a recompute"
 
 
 def test_differing_filters_are_cached_separately(tmp_path: Path) -> None:

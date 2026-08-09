@@ -93,6 +93,11 @@ def build_data_router(
         except Exception:
             payload = None  # malformed JSON; file is saved, ingest skipped
         store.ingest(export_id, received_at, payload)
+        # The rendered pages read through a cache that is otherwise only
+        # time-bounded. New data has to drop it, or the tiles keep showing the
+        # figures from before this export for the rest of the TTL while the
+        # JSON endpoints already answer with it.
+        provider.invalidate()
 
         return {"id": export_id, "received_at": received_at}
 

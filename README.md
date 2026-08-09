@@ -227,7 +227,9 @@ Two mechanisms handle that:
 - **Requests are serialised.** One coverage render runs at a time. Beyond a queue depth of 10 the API returns **`429 Too Many Requests`** with a `Retry-After` header rather than letting the pile-up grow.
 - **Results are cached** for `HEALTH_EXPORT_CACHE_TTL` seconds (default `300`, set `0` to disable). The key is the *filters* — `lat`, `lon`, `width`, `height`, dates, `workout_type`, `max_vertices`, `tolerance_m`, `min_count` — and deliberately not the presentation options, so re-rendering the same area with a different `weight` or without the zoom control is instant. The cache is checked before queueing, so a repeat never waits behind a running render, and again after acquiring the turn, so a burst of identical requests computes once.
 
-Because the cache is keyed on filters, a fresh export will not appear on the map until the TTL lapses. Lower `HEALTH_EXPORT_CACHE_TTL` if that matters more than responsiveness.
+**Ingesting an export drops the whole cache**, so new data appears on the next request rather than waiting out the TTL. Without that the cache is only time-bounded, and a reading can sit in the store for five minutes while the rendered tiles still serve the figures from before it — `/v1/health/summary` current, the dashboard behind, and nothing on the page to say which you are looking at. Everything goes, not just the summaries: an export can carry workouts, and those move the map.
+
+The TTL still matters for the burst it was added for — changing a URL in a Home Assistant card re-requests on every keystroke, and those repeats hit the cache.
 
 **Interactivity is off by default.** A dashboard tile is something you glance at, not something you drive, and a map that captures the scroll wheel is actively hostile inside a scrolling dashboard. `interactive=false` disables dragging, wheel/double-click/pinch/box zoom, keyboard navigation, and the per-path tooltips. Set `interactive=true` to get all of it back.
 

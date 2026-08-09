@@ -102,6 +102,20 @@ class DataProvider:
         self._cache.put(key, result)
         return result
 
+    def invalidate(self) -> None:
+        """Drop every cached answer, because the data underneath them changed.
+
+        Called when an export is ingested. Without it the cache is only
+        time-bounded, so a new reading could sit in the store for the whole TTL
+        while the rendered tiles kept serving the figures from before it —
+        `/v1/health/summary` current, the dashboard five minutes behind, and no
+        way to tell from the page which you were looking at.
+
+        Everything goes, not just the summaries: an export can carry workouts,
+        and those move the coverage map.
+        """
+        self._cache.clear()
+
     def coverage(
         self,
         *,
