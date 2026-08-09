@@ -265,12 +265,20 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 
 | Parameter | Default | Description |
 |---|---|---|
-| `metric` | required | e.g. `weight_body_mass`. See `/v1/health/metrics`. |
+| `metric` | required | e.g. `weight_body_mass`. See `/v1/health/metrics`. **Repeatable** — see below. |
+| `label` | derived from `metric` | Series name in the tooltip. Repeatable, one per `metric`, in order. |
+| `unit` | the stored unit | Override the unit shown in the tooltip. Repeatable; empty (`unit=`) drops it. |
 | `date_range` / `start_date` / `end_date` | `last 90 days` | Same syntax as the health summary. |
 | `window` | `7` | Moving-average window in days. `0` draws the daily line only. |
 | `title` | derived from `metric` | Used as the page title. |
 | `refresh_minutes` | `30` | How often the page reloads itself. |
 | `embed_token` | — | Same token as the map page. |
+
+`metric` is repeatable, and each one becomes its own **stacked panel** with its own y-axis, sharing one x-axis and one hover crosshair. Measures of different scale never share a y-scale here: a dual axis can be slid until either series appears to lead, asserting a relationship the data does not have. Steps (~10,000 `count`) and walking distance (~6 `mi`) differ by a factor of ~1,800 — two panels state each on its own terms.
+
+Values are comma-grouped and lose their decimal above 1,000, so a five-digit step count reads `9,611` rather than `9611.39`. Below that the decimal stays (`191.4 lb`), and sub-unit metrics keep enough digits to survive.
+
+`unit=` with no value exists because some stored units are noise: `step_count`'s unit is the literal string `count`, which adds nothing beside the number.
 
 The trend is a **rolling least-squares fit**, not a moving average: at each day with a reading, a straight line is fitted through the readings in the trailing window and evaluated at that day. It follows the local slope rather than averaging it away, so it turns with the data instead of lagging half a window behind it.
 
@@ -286,6 +294,14 @@ url: https://your-host/v1/render/chart?metric=weight_body_mass&date_range=last+9
 grid_options: {columns: full, rows: 6}
 ```
 
+Two panels in one card:
+
+```yaml
+type: iframe
+url: https://your-host/v1/render/chart?metric=step_count&unit=&label=Steps&metric=walking_running_distance&unit=mi&label=Distance&date_range=last+30+days&window=7&embed_token=…
+grid_options: {columns: full, rows: 6}
+```
+
 ### Stat tile
 
 `GET /v1/render/stat` renders one number — for the questions that are a figure rather than a plot.
@@ -296,6 +312,7 @@ grid_options: {columns: full, rows: 6}
 | `stat` | `latest` | `latest` (most recent reading) or `change` (week over week) |
 | `window` | `7` | Days per half, for `change` |
 | `label` | `Current` / `Weekly trend` | Tile label, sentence case |
+| `unit` | the stored unit | Override the unit beside the number. Empty (`unit=`) drops it. |
 | `good_direction` | `none` | `up`, `down`, or `none` — see below |
 | `margin` | `0` | Extra space around the contents, as a **percent of the tile** (0–20). |
 | `align` | `left` | `left`, `center`, or `right`. |
@@ -305,6 +322,8 @@ grid_options: {columns: full, rows: 6}
 `change` compares **two adjacent windows of equal length in calendar days** — `[t-6, t]` against `[t-13, t-7]` at the default. Equal spans matter: unequal ones weight the two means differently and bias the comparison. It renders an empty state rather than a number when either window has no readings.
 
 `good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
+
+Numbers follow the same rule as the chart: grouped and whole above 1,000 (`9,611`), one decimal below (`191.4`). On a summed metric — steps, distance, energy — `latest` is *the latest day's total*, so it reads as "today" and degrades to the last day with data if none has arrived yet.
 
 `margin` is a **percentage of the tile rather than pixels**, because the tile is rendered anywhere from ~240px to ~560px wide and a fixed pixel margin would swallow a small one and disappear in a large one. It is *additive*, so `0` renders exactly as it would with the parameter absent. Raising it shrinks the text budgets to match — the type scales down as the padding grows, instead of overflowing.
 

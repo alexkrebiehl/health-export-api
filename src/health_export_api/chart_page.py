@@ -54,6 +54,11 @@ _PAD_L, _PAD_R, _PAD_T, _PAD_B = 46, 14, 16, 26
 # and how far it sits from the point it describes.
 _TIP_EDGE, _TIP_GAP = 4, 10
 
+# Vertical space between stacked panels, and the span at which x ticks switch
+# from month starts to evenly spaced days.
+_PANEL_GAP = 22
+_MONTH_TICK_SPAN_DAYS = 70
+
 
 # ---------------------------------------------------------------------------
 # Series maths
@@ -201,6 +206,23 @@ def _path(points: Sequence[Point], sx, sy) -> str:
     return "M " + " L ".join(f"{sx(d):.1f},{sy(v):.1f}" for d, v in points)
 
 
+# Above this, readouts are comma-grouped and lose their decimal: "9,162"
+# carries every digit that means anything on a step count. Matches the stat
+# tile's rule, so the tooltip and the tile beside it agree.
+_GROUP_ABOVE = 1000
+
+
+def _readout(value: float) -> str:
+    """The number as the tooltip states it."""
+    if abs(value) >= _GROUP_ABOVE:
+        return f"{value:,.0f}"
+    if abs(value) >= 1:
+        text = f"{value:.1f}"
+        return text[:-2] if text.endswith(".0") else text
+    # Sub-unit metrics would round away entirely at one decimal.
+    return f"{value:g}"
+
+
 _TEMPLATE = Template("""<!doctype html>
 <html lang="en">
 <head>
@@ -239,9 +261,9 @@ $palette
      has a fixed height, so on a short frame a percentage puts it past the
      bottom and it gets clipped. */
   .xtick{transform:translate(-50%,0);bottom:3px}
-  #dot{position:absolute;width:9px;height:9px;border-radius:50%;
-       background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
-       transform:translate(-50%,-50%);opacity:0;pointer-events:none}
+  .hdot{position:absolute;width:9px;height:9px;border-radius:50%;
+        background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
+        transform:translate(-50%,-50%);opacity:0;pointer-events:none}
   /* No centring transform: the position is computed and clamped in JS, so
      that half the box cannot hang off the right edge at the last reading. */
   #tip{position:absolute;pointer-events:none;opacity:0;
@@ -266,7 +288,7 @@ $body
   var svg = document.querySelector('svg');
   if(!svg) return;
   var cross = svg.querySelector('.cross');
-  var dot = document.getElementById('dot');
+  var dots = [].slice.call(document.querySelectorAll('.hdot'));
   var tip = document.getElementById('tip'), wrap = document.getElementById('wrap');
 
   // With preserveAspectRatio="none" the viewBox maps linearly onto the box,
@@ -284,19 +306,35 @@ $body
       var dist = Math.abs(d.points[i].x - vx);
       if (dist < bestD){ bestD = dist; best = i; }
     }
-    var p = d.points[best], hasTrend = p.ty !== null;
-    var y = hasTrend ? p.ty : p.ry;
-
+    var p = d.points[best];
     cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
     cross.style.opacity = 1;
 
-    dot.style.left = (fracX(p.x) * 100) + '%';
-    dot.style.top = (fracY(y) * 100) + '%';
-    dot.style.opacity = 1;
-
-    tip.innerHTML = '<span>' + p.label + '</span><br>' + p.rv + ' ' + d.unit +
-      (hasTrend ? '<br><b>' + p.tv + ' ' + d.unit + '</b> <span>' + d.window +
-                  '-day trend</span>' : '');
+    // One dot per panel, and one tooltip listing every series for this date.
+    // A single series keeps its trend readout; with several, the bold line
+    // already shows the trend and repeating it per series would crowd the box.
+    var many = d.series.length > 1;
+    var html = '<span>' + p.label + '</span>', anchor = null;
+    for (var s = 0; s < d.series.length; s++){
+      var v = p.v[s], meta = d.series[s], dot = dots[s];
+      if (!v){ if (dot) dot.style.opacity = 0; continue; }
+      var vy = v.ty !== null ? v.ty : v.ry;
+      if (anchor === null) anchor = vy;
+      if (dot){
+        dot.style.left = (fracX(p.x) * 100) + '%';
+        dot.style.top = (fracY(vy) * 100) + '%';
+        dot.style.opacity = 1;
+      }
+      var unit = meta.unit ? ' ' + meta.unit : '';
+      html += '<br>' + (many ? '<span>' + meta.label + '</span> ' : '') + v.rv + unit;
+      if (!many && v.tv !== null){
+        html += '<br><b>' + v.tv + unit + '</b> <span>' + d.window +
+                '-day trend</span>';
+      }
+    }
+    if (anchor === null) return;   // no series has a reading here
+    var y = anchor;
+    tip.innerHTML = html;
 
     // Placed in pixels and clamped, rather than centred with a transform:
     // centring puts half the box past the right edge at the last reading,
@@ -330,21 +368,71 @@ $body
 """)
 
 
+def _x_ticks(first: date, last: date) -> list[tuple[date, str]]:
+    """Dates to label along the x axis, chosen to suit the span.
+
+    Month starts read well across a quarter but collapse to a single label over
+    a month, so a short span gets evenly spaced day markers instead.
+    """
+    span = (last - first).days
+    if span >= _MONTH_TICK_SPAN_DAYS:
+        out = []
+        month = date(first.year, first.month, 1)
+        while month <= last:
+            if month >= first:
+                out.append((month, month.strftime("%b")))
+            month = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
+        return out
+
+    step = max(span // 4, 1)
+    days = list(range(0, span + 1, step))
+    return [(first + timedelta(days=n), (first + timedelta(days=n)).strftime("%-d %b"))
+            for n in days]
+
+
 def render_chart_page(
-    summary: dict[str, Any],
+    summaries: dict[str, Any] | Sequence[dict[str, Any]],
     *,
     title: str = "Weight",
+    series_labels: Sequence[str] | None = None,
+    series_units: Sequence[str] | None = None,
     window: int = 7,
     refresh_minutes: int = 30,
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
 ) -> str:
-    """Render a metric summary as a standalone SVG line chart page."""
-    points = parse_series(summary.get("series") or [])
-    unit = summary.get("unit") or ""
+    """Render one or more metric summaries as a standalone SVG chart page.
 
-    if not points:
+    Each summary becomes its own **stacked panel** with its own y-axis, sharing
+    one x-axis. Measures in different units — steps and miles, say — cannot
+    share a y-scale honestly: a dual axis can be slid until either series
+    appears to lead, so it asserts a relationship the data does not have.
+    Separate panels state each measure on its own terms.
+
+    With a single summary the layout collapses to exactly one full-height
+    panel, which is the original single-metric chart.
+    """
+    if isinstance(summaries, dict):
+        summaries = [summaries]
+
+    # An override per series, positionally. `step_count`'s stored unit is the
+    # literal string "count", which reads as noise beside the number, so an
+    # empty override has to be able to drop it. `None` keeps what was stored.
+    overrides = list(series_units or []) + [None] * len(summaries)
+    panels = [
+        (parse_series(s.get("series") or []),
+         (s.get("unit") or "") if override is None else override,
+         label)
+        for s, label, override in zip(
+            summaries,
+            list(series_labels or []) + [""] * len(summaries),
+            overrides,
+        )
+    ]
+    panels = [p for p in panels if p[0]]  # a panel with no readings is no panel
+
+    if not panels:
         body = '<div class="empty">No readings in this period.</div>'
-        payload = {"points": [], "unit": unit, "window": window}
+        payload = {"points": [], "series": [], "window": window}
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
@@ -353,86 +441,104 @@ def render_chart_page(
             refresh_ms=refresh_minutes * 60_000,
         )
 
-    trend = rolling_trend(points, window) if window >= 1 else []
-    trend_by_day = dict(trend)
-
-    first, last = points[0][0], points[-1][0]
+    # One shared x scale across every panel.
+    first = min(points[0][0] for points, _, _ in panels)
+    last = max(points[-1][0] for points, _, _ in panels)
     day_span = max((last - first).days, 1)
-    values = [v for _, v in points] + [v for _, v in trend]
-    low, high = min(values), max(values)
-    # A little headroom so the extremes are not welded to the frame.
-    margin = (high - low) * 0.12 or 1.0
-    low, high = low - margin, high + margin
 
     def sx(d: date) -> float:
         return _PAD_L + (d - first).days / day_span * (_W - _PAD_L - _PAD_R)
 
-    def sy(v: float) -> float:
-        return _H - _PAD_B - (v - low) / (high - low) * (_H - _PAD_T - _PAD_B)
+    count = len(panels)
+    gap = _PANEL_GAP if count > 1 else 0
+    panel_h = (_H - _PAD_T - _PAD_B - gap * (count - 1)) / count
 
     parts: list[str] = []
     # Tick text lives outside the SVG. The SVG stretches to fill the frame, and
     # anything inside it stretches too — type included — so the labels are HTML
     # placed at the same coordinates expressed as percentages.
     labels: list[str] = []
+    series_meta: list[dict[str, Any]] = []
+    by_day: list[dict[date, dict[str, Any]]] = []
 
-    for tick in _nice_ticks(low, high):
-        y = sy(tick)
-        parts.append(f'<line class="grid" x1="{_PAD_L}" y1="{y:.1f}" '
-                     f'x2="{_W - _PAD_R}" y2="{y:.1f}"/>')
-        # The gutter is a percentage of width, so on a narrow frame it
-        # collapses and a right-aligned label runs off the left edge. The
-        # floor keeps a four-digit tick on screen at any width.
-        labels.append(
-            f'<div class="tick ytick" '
-            f'style="left:max(34px,{(_PAD_L - 8) / _W * 100:.3f}%);'
-            f'top:{y / _H * 100:.3f}%">{tick:g}</div>')
+    for index, (points, unit, label) in enumerate(panels):
+        top = _PAD_T + index * (panel_h + gap)
+        bottom = top + panel_h
 
-    # Month starts make honest x ticks over a 90-day window.
-    month = date(first.year, first.month, 1)
-    while month <= last:
-        if month >= first:
-            x = sx(month)
-            parts.append(f'<line class="axis" x1="{x:.1f}" y1="{_H - _PAD_B}" '
-                         f'x2="{x:.1f}" y2="{_H - _PAD_B + 4}"/>')
-            # Only the horizontal position comes from the plot; the CSS pins
-            # these to the bottom edge.
+        trend = rolling_trend(points, window) if window >= 1 else []
+        values = [v for _, v in points] + [v for _, v in trend]
+        low, high = min(values), max(values)
+        # A little headroom so the extremes are not welded to the frame.
+        margin = (high - low) * 0.12 or 1.0
+        low, high = low - margin, high + margin
+
+        def sy(v: float, top=top, bottom=bottom, low=low, high=high) -> float:
+            return bottom - (v - low) / (high - low) * (bottom - top)
+
+        for tick in _nice_ticks(low, high):
+            y = sy(tick)
+            parts.append(f'<line class="grid" x1="{_PAD_L}" y1="{y:.1f}" '
+                         f'x2="{_W - _PAD_R}" y2="{y:.1f}"/>')
+            # The gutter is a percentage of width, so on a narrow frame it
+            # collapses and a right-aligned label runs off the left edge. The
+            # floor keeps a four-digit tick on screen at any width.
             labels.append(
-                f'<div class="tick xtick" style="left:{x / _W * 100:.3f}%">'
-                f'{month.strftime("%b")}</div>')
-        month = date(month.year + (month.month == 12),
-                     month.month % 12 + 1, 1)
+                f'<div class="tick ytick" '
+                f'style="left:max(34px,{(_PAD_L - 8) / _W * 100:.3f}%);'
+                f'top:{y / _H * 100:.3f}%">{tick:,g}</div>')
 
-    parts.append(f'<line class="axis" x1="{_PAD_L}" y1="{_H - _PAD_B}" '
-                 f'x2="{_W - _PAD_R}" y2="{_H - _PAD_B}"/>')
+        parts.append(f'<line class="axis" x1="{_PAD_L}" y1="{bottom:.1f}" '
+                     f'x2="{_W - _PAD_R}" y2="{bottom:.1f}"/>')
 
-    for run in split_on_gaps(points, max_gap_days):
-        if len(run) > 1:
-            parts.append(f'<path class="raw" d="{_path(run, sx, sy)}"/>')
+        for run in split_on_gaps(points, max_gap_days):
+            if len(run) > 1:
+                parts.append(f'<path class="raw" d="{_path(run, sx, sy)}"/>')
+        for run in split_on_gaps(trend, max_gap_days):
+            if len(run) > 1:
+                parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
 
-    for run in split_on_gaps(trend, max_gap_days):
-        if len(run) > 1:
-            parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
+        series_meta.append({"unit": unit, "label": label})
+        trend_by_day = dict(trend)
+        by_day.append({
+            d: {
+                "ry": round(sy(v), 1),
+                "ty": (round(sy(trend_by_day[d]), 1) if d in trend_by_day else None),
+                "rv": _readout(v),
+                "tv": (_readout(trend_by_day[d]) if d in trend_by_day else None),
+            }
+            for d, v in points
+        })
+
+    # X ticks once, under the bottom panel.
+    for day, text in _x_ticks(first, last):
+        x = sx(day)
+        parts.append(f'<line class="axis" x1="{x:.1f}" y1="{_H - _PAD_B}" '
+                     f'x2="{x:.1f}" y2="{_H - _PAD_B + 4}"/>')
+        # Only the horizontal position comes from the plot; the CSS pins these
+        # to the bottom edge.
+        labels.append(f'<div class="tick xtick" style="left:{x / _W * 100:.3f}%">'
+                      f'{text}</div>')
 
     parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H - _PAD_B}"/>')
 
+    dots = "".join(f'<div class="hdot"></div>' for _ in panels)
     body = (f'<svg viewBox="0 0 {_W} {_H}" preserveAspectRatio="none" role="img" '
             f'aria-label="{title}">{"".join(parts)}</svg>'
-            f'{"".join(labels)}<div id="dot"></div><div id="tip"></div>')
+            f'{"".join(labels)}{dots}<div id="tip"></div>')
 
+    every_day = sorted({d for points, _, _ in panels for d, _ in points})
     payload = {
-        "unit": unit,
         "window": window,
+        "series": series_meta,
         "points": [
             {
                 "x": round(sx(d), 1),
-                "ry": round(sy(v), 1),
-                "ty": round(sy(trend_by_day[d]), 1) if d in trend_by_day else None,
-                "rv": f"{v:g}",
-                "tv": f"{trend_by_day[d]:.1f}" if d in trend_by_day else None,
                 "label": d.strftime("%a %-d %b"),
+                # One entry per panel, null where that series has no reading
+                # for the day, so the hover can skip it.
+                "v": [panel.get(d) for panel in by_day],
             }
-            for d, v in points
+            for d in every_day
         ],
     }
 

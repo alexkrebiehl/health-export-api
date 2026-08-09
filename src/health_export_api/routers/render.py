@@ -93,7 +93,9 @@ def build_render_router(
 
     @router.get("/chart", response_class=HTMLResponse)
     def render_chart(
-        metric: str,
+        metric: list[str] = Query(default=...),
+        label: list[str] | None = Query(default=None),
+        unit: list[str] | None = Query(default=None),
         date_range: str | None = Query(default=None),
         start_date: str | None = Query(default=None),
         end_date: str | None = Query(default=None),
@@ -103,7 +105,13 @@ def build_render_router(
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
     ) -> HTMLResponse:
-        """A metric's daily series with a rolling trend line, for embedding."""
+        """Daily series with a rolling trend line, for embedding.
+
+        ``metric`` is repeatable: each one becomes its own stacked panel with
+        its own y-axis. Measures in different units cannot honestly share a
+        y-scale, so they get a panel each rather than a second axis. ``label``
+        and ``unit`` are repeatable alongside it, one per metric in order.
+        """
         authorize_embed(authorization, embed_token)
         with domain_errors():
             # Unlike the summary endpoints the timeframe is optional here, so
@@ -114,13 +122,19 @@ def build_render_router(
                 end_date=end_date,
                 default_range="last 90 days",
             )
-            summary = provider.metric_summary(
-                metric=metric, start_date=range_start, end_date=range_end
-            )
+            summaries = [
+                provider.metric_summary(
+                    metric=name, start_date=range_start, end_date=range_end
+                )
+                for name in metric
+            ]
+        names = [name.replace("_", " ").title() for name in metric]
         return HTMLResponse(
             render_chart_page(
-                summary,
-                title=title or metric.replace("_", " ").title(),
+                summaries,
+                title=title or names[0],
+                series_labels=list(label or []) or names,
+                series_units=list(unit or []),
                 window=window,
                 refresh_minutes=refresh_minutes,
             )
@@ -133,6 +147,7 @@ def build_render_router(
         window: int = Query(default=7, ge=1, le=365),
         label: str | None = Query(default=None),
         good_direction: str = Query(default="none", pattern="^(up|down|none)$"),
+        unit: str | None = Query(default=None),
         margin: float = Query(default=0.0, ge=0, le=MAX_MARGIN),
         align: str = Query(default="left", pattern="^(left|center|right)$"),
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
@@ -150,13 +165,15 @@ def build_render_router(
         )
 
         points = parse_series(summary.get("series") or [])
-        unit = summary.get("unit") or ""
+        # `unit=` (empty) suppresses it: step_count's stored unit is the
+        # literal string "count", which reads as noise beside the number.
+        label_unit = summary.get("unit") or "" if unit is None else unit
 
         if stat == "change":
             return HTMLResponse(
                 render_change_tile(
                     window_change(points, window, today),
-                    unit=unit,
+                    unit=label_unit,
                     label=label or "Weekly trend",
                     window_days=window,
                     good_direction=good_direction,  # type: ignore[arg-type]
@@ -168,7 +185,7 @@ def build_render_router(
         return HTMLResponse(
             render_latest_tile(
                 latest_reading(points),
-                unit=unit,
+                unit=label_unit,
                 label=label or "Current",
                 refresh_minutes=refresh_minutes,
                 today=today,

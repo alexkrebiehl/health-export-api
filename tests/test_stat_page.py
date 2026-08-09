@@ -202,6 +202,14 @@ def test_tiles_render_an_empty_state_rather_than_failing() -> None:
     assert "Not enough readings" in render_change_tile(None, window_days=7)
 
 
+def test_large_values_are_grouped_and_lose_the_decimal() -> None:
+    # A step count is five digits: "9605.0" is both noisy and hard to scan.
+    assert "9,605" in render_latest_tile((d("2026-07-12"), 9605.0), today=TODAY)
+    assert "9605" not in render_latest_tile((d("2026-07-12"), 9605.0), today=TODAY)
+    # Weight sits below the threshold and keeps its decimal.
+    assert "191.4" in render_latest_tile((d("2026-07-12"), 191.4), today=TODAY)
+
+
 def test_whole_numbers_drop_the_trailing_decimal() -> None:
     assert "2 lb" in render_change_tile(
         (191.0, 193.0, -2.0), unit=" lb"
@@ -293,6 +301,21 @@ def test_bad_parameters_are_rejected(tmp_path: Path) -> None:
     assert stat(client, align="middle").status_code == 422
     assert stat(client, margin=-1).status_code == 422
     assert stat(client, margin=50).status_code == 422
+
+
+def test_an_explicit_unit_overrides_the_stored_one(tmp_path: Path) -> None:
+    # step_count's stored unit is the literal string "count", which reads as
+    # noise beside the number, so an empty `unit=` has to be able to drop it.
+    client = make_client(tmp_path)
+    ingest_weight(client, {"2026-07-12": 191.4})
+
+    blanked = stat(client, unit="").text
+    overridden = stat(client, unit="kg").text
+
+    assert "191.4" in blanked and ">lb<" not in blanked
+    assert "191.4" in overridden and ">kg<" in overridden
+    # Omitting the param still falls back to what the store recorded.
+    assert ">lb<" in stat(client).text
 
 
 def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:

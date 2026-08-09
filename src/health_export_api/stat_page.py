@@ -86,6 +86,9 @@ _EM_WIDTHS = {" ": 0.26, ".": 0.28, ",": 0.28, "·": 0.32,
 _EM_DEFAULT = 0.58
 
 # Base padding, as a share of the tile, before any caller-supplied margin.
+# Above this, values are comma-grouped and lose the decimal.
+_GROUP_ABOVE = 1000
+
 _BASE_PAD_H = 4.0
 _BASE_PAD_V = 3.0
 
@@ -134,7 +137,13 @@ def _cqw_for(text: str, budget: float, *, cap: float) -> float:
 
 
 def _fmt(value: float) -> str:
-    """One decimal, but no trailing '.0' — 191.4 lb, 2 lb."""
+    """One decimal, no trailing '.0', and grouped once it gets big.
+
+    191.4 lb, 2 lb, 9,605 steps. A decimal on a five-digit step count is
+    noise, and ungrouped digits at that length are hard to read at a glance.
+    """
+    if abs(value) >= _GROUP_ABOVE:
+        return f"{value:,.0f}"
     text = f"{value:.1f}"
     return text[:-2] if text.endswith(".0") else text
 

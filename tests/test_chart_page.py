@@ -1,7 +1,7 @@
 """Tests for the metric chart page and its series maths."""
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +159,127 @@ def test_the_plot_fills_the_frame_without_distorting_ink() -> None:
                      r'top:[\d.]+%"', html)
 
 
+def steps_and_distance() -> list[dict[str, Any]]:
+    """Two metrics whose magnitudes differ by ~1,800x, as steps and miles do."""
+    steps = summary({f"2026-07-{i:02d}": 9000 + i * 200 for i in range(1, 15)},
+                    unit="count")
+    dist = summary({f"2026-07-{i:02d}": 4.5 + i * 0.1 for i in range(1, 15)},
+                   unit="mi")
+    return [steps, dist]
+
+
+def test_two_metrics_get_a_panel_each_not_a_second_axis() -> None:
+    """Different units cannot honestly share a y-scale.
+
+    A dual axis can be slid until either series appears to lead, so each
+    measure gets its own panel with its own scale instead.
+    """
+    html = render_chart_page(steps_and_distance(), series_labels=["Steps", "Distance"])
+
+    data = embedded(html)
+    assert [s["unit"] for s in data["series"]] == ["count", "mi"]
+    assert [s["label"] for s in data["series"]] == ["Steps", "Distance"]
+
+    # Two panels: two baselines, two raw lines, two trend lines, two dots.
+    assert html.count('class="raw"') == 2
+    assert html.count('class="trend"') == 2
+    assert html.count('class="hdot"') == 2
+
+    # Each point carries one entry per panel.
+    assert all(len(p["v"]) == 2 for p in data["points"])
+    first = data["points"][0]
+    assert first["v"][0]["rv"] == "9,200"   # grouped
+    assert first["v"][1]["rv"] == "4.6"
+
+
+def test_readouts_drop_meaningless_precision_at_step_scale() -> None:
+    # The real series carries fractions of a step (9162.4667). Two decimals on
+    # a five-digit count is noise, and it has to match the stat tile beside it.
+    steps = summary({"2026-07-01": 9162.4667, "2026-07-02": 10000.0,
+                     "2026-07-03": 11111.11}, unit="count")
+    weight = summary({"2026-07-01": 191.44, "2026-07-02": 190.0})
+    tiny = summary({"2026-07-01": 0.0421, "2026-07-02": 0.0533}, unit="ratio")
+
+    grouped = [p["v"][0]["rv"] for p in embedded(render_chart_page(steps))["points"]]
+    assert grouped == ["9,162", "10,000", "11,111"]
+
+    # Weight-scale numbers keep their decimal and lose a bare ".0".
+    assert [p["v"][0]["rv"] for p in embedded(render_chart_page(weight))["points"]] == [
+        "191.4", "190"
+    ]
+    # Sub-unit metrics would round away entirely at one decimal.
+    assert [p["v"][0]["rv"] for p in embedded(render_chart_page(tiny))["points"]] == [
+        "0.0421", "0.0533"
+    ]
+
+
+def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
+    html = render_chart_page(steps_and_distance(), series_units=["", "mi"])
+
+    assert [s["unit"] for s in embedded(html)["series"]] == ["", "mi"]
+    # Omitted, the stored unit stands.
+    assert embedded(render_chart_page(steps_and_distance()))["series"][0]["unit"] == (
+        "count"
+    )
+
+
+def test_the_panels_occupy_separate_vertical_bands() -> None:
+    html = render_chart_page(steps_and_distance())
+    data = embedded(html)
+
+    tops = [p["v"][0]["ry"] for p in data["points"]]
+    bottoms = [p["v"][1]["ry"] for p in data["points"]]
+
+    # Every point of the upper panel sits above every point of the lower one:
+    # the bands do not overlap, which is what makes two scales readable.
+    assert max(tops) < min(bottoms)
+
+
+def test_a_single_metric_still_renders_one_full_height_panel() -> None:
+    html = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+
+    assert html.count('class="raw"') == 1
+    assert html.count('class="hdot"') == 1
+    # The panel spans the full plot area, so its baseline is the frame's.
+    assert 'class="axis" x1="46" y1="294.0" x2="986" y2="294.0"' in html
+
+
+def test_x_ticks_are_drawn_once_for_all_panels() -> None:
+    html = render_chart_page(steps_and_distance())
+
+    labels = re.findall(r'class="tick xtick"[^>]*>([^<]*)</div>', html)
+    assert labels == sorted(set(labels), key=labels.index)  # no repeats
+    assert len(labels) >= 2
+
+
+def test_x_ticks_suit_the_span() -> None:
+    # A month of data would collapse to a single month label, so a short span
+    # gets day markers instead.
+    short = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+    assert re.search(r'class="tick xtick"[^>]*>\d+ Jul</div>', short)
+
+    long_span = summary(
+        {(date(2026, 4, 20) + timedelta(days=i)).isoformat(): 190.0 + (i % 4)
+         for i in range(84)}
+    )
+    assert re.search(r'class="tick xtick"[^>]*>May</div>',
+                     render_chart_page(long_span))
+
+
+def test_y_ticks_are_comma_grouped_when_large() -> None:
+    html = render_chart_page(
+        summary({f"2026-07-{i:02d}": 9000 + i * 400 for i in range(1, 15)},
+                unit="count")
+    )
+
+    ticks = re.findall(r'class="tick ytick"[^>]*>([\d,.]+)</div>', html)
+    assert any("," in t for t in ticks), ticks
+
+
 def test_the_tile_can_never_scroll() -> None:
     html = render_chart_page(
         summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
@@ -278,11 +399,12 @@ def test_chart_endpoint_plots_ingested_readings(tmp_path: Path) -> None:
 
     data = embedded(html)
     assert len(data["points"]) == 10
-    assert data["unit"] == "lb"
+    assert data["series"][0]["unit"] == "lb"
     assert data["window"] == 7
-    # Later points carry a trend value; the first cannot.
-    assert data["points"][0]["ty"] is None
-    assert data["points"][-1]["ty"] is not None
+    # Later points carry a trend value; the first cannot. `v` holds one entry
+    # per panel, so a single-metric chart reads index 0.
+    assert data["points"][0]["v"][0]["ty"] is None
+    assert data["points"][-1]["v"][0]["ty"] is not None
 
 
 def test_window_zero_omits_the_average(tmp_path: Path) -> None:
@@ -294,7 +416,7 @@ def test_window_zero_omits_the_average(tmp_path: Path) -> None:
                               "embed_token": EMBED_TOKEN}).text
 
     assert 'class="trend"' not in html
-    assert all(p["ty"] is None for p in embedded(html)["points"])
+    assert all(p["v"][0]["ty"] is None for p in embedded(html)["points"])
 
 
 def test_an_unknown_metric_renders_an_empty_state(tmp_path: Path) -> None:
