@@ -12,7 +12,7 @@ shapes — and nothing in this file changes. A test asserts the boundary holds.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Callable
 
 from fastapi import APIRouter, Header, Query
@@ -25,6 +25,7 @@ from health_export_api.chart_page import (
     render_chart_page,
     window_balance,
     window_change,
+    zero_fill_today,
 )
 from health_export_api.map_page import render_map_page
 from health_export_api.provider import DataProvider
@@ -37,6 +38,20 @@ from health_export_api.stat_page import (
 )
 
 AuthorizeEmbed = Callable[[str | None, str | None], None]
+
+
+def _with_zero_today(summary: dict, today: date) -> list[dict]:
+    """The summary's series with today added at zero when it is missing.
+
+    The dict-shaped counterpart of :func:`zero_fill_today`, for the chart —
+    which is handed summaries rather than parsed points. Same rule: a daily
+    total with nothing logged yet today is zero so far.
+    """
+    series = list(summary.get("series") or [])
+    stamp = today.isoformat()
+    if any(row.get("period") == stamp for row in series):
+        return series
+    return [*series, {"period": stamp, "samples": 0, "value": 0.0}]
 
 
 def build_render_router(
@@ -146,6 +161,12 @@ def build_render_router(
                 )
                 for name in metric
             ]
+        # A daily total with nothing recorded today is zero so far, not a gap.
+        # Only summed metrics: an averaged one has no reading, not a zero one.
+        for summary in summaries:
+            if summary.get("aggregation") == "sum":
+                summary["series"] = _with_zero_today(summary, provider.today)
+
         names = [name.replace("_", " ").title() for name in metric]
         return HTMLResponse(
             render_chart_page(
@@ -194,6 +215,12 @@ def build_render_router(
         )
 
         points = parse_series(summary.get("series") or [])
+        # A daily total with nothing recorded today is zero so far, not stale.
+        # Averaged metrics keep their last reading — you do not weigh nothing
+        # because you skipped the scale.
+        summed = summary.get("aggregation") == "sum"
+        if summed:
+            points = zero_fill_today(points, today)
         # `unit=` (empty) suppresses it: step_count's stored unit is the
         # literal string "count", which reads as noise beside the number.
         label_unit = summary.get("unit") or "" if unit is None else unit

@@ -186,12 +186,16 @@ def window_balance(
 
     Negative is a deficit — less taken in than spent.
 
-    **Only days with an intake reading count.** Burn is recorded continuously
-    by the watch, so at 9am today there is a partial day of spend against an
-    unlogged breakfast; counting it would read as a several-hundred-calorie
-    deficit that is really just a meal nobody has entered yet. A day with no
-    intake logged is not a day of fasting, it is a day of missing data, and the
-    honest response is to leave it out and say how many days remain.
+    **Only days with an intake reading count.** A past day with none is missing
+    data rather than a day of fasting — two such days in the last sixty have
+    burn recorded and no intake, against a lowest genuinely-logged day of 1,317
+    kcal, so calling them zero would invent a 2,200 kcal deficit each. They are
+    left out and the caller says how many days remain.
+
+    Today is the exception, and it is the caller's to make: pass intake through
+    :func:`zero_fill_today` first and today arrives with a zero reading, so its
+    partial burn counts against nothing eaten yet — which is what a running
+    total for a day in progress should say.
 
     Returns ``(net, days)``, or ``None`` when no day in the window qualifies.
     """
@@ -212,6 +216,24 @@ def window_balance(
             if day in eaten:
                 burned += value
     return sum(eaten.values()) - burned, len(eaten)
+
+
+def zero_fill_today(points: Sequence[Point], today: date) -> list[Point]:
+    """Record today as zero when a daily total has nothing logged yet.
+
+    Only for **today**, and only for a summed metric. The day is in progress:
+    nothing logged means nothing has happened yet, which is a number, and
+    reporting yesterday's total under a "Today" label instead is worse.
+
+    A *past* day is a different claim. There the log is finished, so an absent
+    day is missing data rather than a day of fasting — and it shows: two days
+    in the last sixty have burn recorded and no intake, against a lowest
+    genuinely-logged day of 1,317 kcal. Calling those zero would invent a
+    2,200 kcal deficit each, so they stay absent.
+    """
+    if any(day == today for day, _ in points):
+        return list(points)
+    return sorted([*points, (today, 0.0)])
 
 
 def latest_reading(points: Sequence[Point]) -> Point | None:

@@ -369,11 +369,19 @@ grid_options: {columns: full, rows: 6}
 | `refresh_minutes` | `30` | How often the page reloads itself |
 | `embed_token` | — | Same token as the other embedded pages |
 
+#### Today counts as zero, for totals only
+
+A **summed** metric with nothing recorded today reads as `0`, dated today, rather than falling back to the last day that has data. The day is in progress: nothing logged means nothing has happened yet, which is a number. This applies to the stat tile, the balance window and the chart alike, so all three tell the same story — the diet chart draws today's intake at zero, and the balance counts today's partial burn against it.
+
+**Averaged** metrics are untouched: you do not weigh nothing because you skipped the scale, so the weight tile still shows its last reading and says how stale it is. The distinction is drawn from the metric's own aggregation, not from a flag.
+
+The trade is worth knowing: if data stops arriving, a summed tile reads `0` rather than showing a stale figure labelled "Yesterday". The note line still says "Today", so it is not hidden, but a feed outage and a genuinely empty day look alike.
+
 `change` compares **two adjacent windows of equal length in calendar days** — `[t-6, t]` against `[t-13, t-7]` at the default. Equal spans matter: unequal ones weight the two means differently and bias the comparison. It renders an empty state rather than a number when either window has no readings.
 
 `balance` subtracts every `minus` metric from `metric` across the window — energy in against energy out. Negative renders green as a deficit, positive red as a surplus. This is the one tile that colours both directions: the change tile stays neutral because whether a metric rising is good depends on the goal, but here the goal *is* what's being measured. Colour is still never the only channel — the note says "deficit" or "surplus" and the arrow carries direction.
 
-**Days with no `metric` reading are left out of the window**, and the note says how many days remain. Burn is recorded continuously by the watch, so at 9am there is a partial day of spend against an unlogged breakfast; counting it would report a few hundred calories of deficit that are really just a meal nobody has entered yet. A day with no intake logged is missing data, not a day of fasting.
+**Days with no `metric` reading are left out of the window** — except today, see below — and the note says how many days remain. A finished day with nothing logged is missing data, not a day of fasting, and it happens: two days in the last sixty have burn recorded and no intake, against a lowest genuinely-logged day of 1,317 kcal. Scoring those as zero would invent a 2,200 kcal deficit each.
 
 `good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
 

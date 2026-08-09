@@ -12,6 +12,7 @@ from health_export_api.chart_page import (
     latest_reading,
     window_balance,
     window_change,
+    zero_fill_today,
 )
 from health_export_api.stat_page import (
     render_balance_tile,
@@ -292,6 +293,54 @@ def test_window_balance_ignores_days_outside_the_window() -> None:
     assert net == pytest.approx(2000 - 3000)
 
 
+def test_today_reads_as_zero_when_nothing_has_been_logged_yet() -> None:
+    """A day in progress with nothing recorded has eaten nothing *so far*.
+
+    Reporting yesterday's total under a "Today" label is the wrong answer; zero
+    is a number and it is the right one.
+    """
+    logged = days({"2026-07-10": 2000.0, "2026-07-11": 1800.0})
+
+    filled = zero_fill_today(logged, TODAY)
+
+    assert filled[-1] == (TODAY, 0.0)
+    assert latest_reading(filled) == (TODAY, 0.0)
+    # And it leaves a day that *does* have a reading alone.
+    already = days({"2026-07-11": 1800.0, "2026-07-12": 900.0})
+    assert zero_fill_today(already, TODAY) == already
+
+
+def test_a_past_day_with_nothing_logged_is_not_called_zero() -> None:
+    """The half of the rule that has to stay a gap.
+
+    A finished day with no intake is a missing log, not a fast — two such days
+    in the last sixty, against a lowest real day of 1,317 kcal. Calling them
+    zero would invent a 2,200 kcal deficit each.
+    """
+    gap = days({"2026-07-08": 2000.0, "2026-07-10": 1800.0})  # the 9th missing
+
+    filled = zero_fill_today(gap, TODAY)
+
+    assert d("2026-07-09") not in [day for day, _ in filled]
+    # The balance ignores it too, rather than scoring it as a fasting day.
+    burn = days({"2026-07-08": 3000.0, "2026-07-09": 3000.0, "2026-07-10": 3000.0})
+    net, counted = window_balance(gap, [burn], 7, TODAY)
+    assert counted == 2
+    assert net == pytest.approx(3800 - 6000)
+
+
+def test_the_balance_counts_today_once_it_has_been_zero_filled() -> None:
+    eaten = days({"2026-07-11": 1800.0})
+    burn = days({"2026-07-11": 3000.0, "2026-07-12": 700.0})
+
+    without = window_balance(eaten, [burn], 7, TODAY)
+    with_today = window_balance(zero_fill_today(eaten, TODAY), [burn], 7, TODAY)
+
+    assert without == (pytest.approx(-1200.0), 1)
+    # Today's partial burn now counts against nothing eaten yet.
+    assert with_today == (pytest.approx(-1900.0), 2)
+
+
 def test_the_balance_tile_colours_both_directions_but_never_alone() -> None:
     deficit = render_balance_tile((-8351.0, 7), unit="kcal")
     surplus = render_balance_tile((1200.0, 7), unit="kcal")
@@ -458,6 +507,31 @@ def test_the_balance_endpoint_subtracts_every_minus_metric(tmp_path: Path) -> No
     assert "2,100" in html
     assert 'class="value good"' in html and "deficit" in html
     assert "over 2 days of 7" in html
+
+
+def test_zero_fill_reaches_the_endpoint_for_totals_but_not_for_levels(
+    tmp_path: Path,
+) -> None:
+    """Summed metrics only. You do not weigh nothing because you skipped the
+    scale, so the weight tile must keep falling back to its last reading."""
+    client = make_client(tmp_path)
+    assert client.post("/v1/exports", headers=HEADERS, json={"data": {"metrics": [
+        {"name": "dietary_energy", "units": "kcal",
+         "data": [{"date": "2026-07-11T12:00:00-04:00", "qty": 1800.0}]},
+        {"name": "weight_body_mass", "units": "lb",
+         "data": [{"date": "2026-07-11T07:00:00-04:00", "qty": 191.4}]},
+    ]}}).status_code == 201
+
+    eaten = client.get("/v1/render/stat", params={
+        "metric": "dietary_energy", "embed_token": EMBED_TOKEN}).text
+    weight = client.get("/v1/render/stat", params={
+        "metric": "weight_body_mass", "embed_token": EMBED_TOKEN}).text
+
+    # Nothing logged today: zero so far, dated today.
+    assert ">0<" in eaten.replace('<span class="unit">kcal</span>', "")
+    assert "Today · 12 Jul" in eaten
+    # A level keeps its last reading and says how stale it is.
+    assert "191.4" in weight and "Yesterday · 11 Jul" in weight
 
 
 def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:
