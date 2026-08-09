@@ -159,6 +159,35 @@ def test_the_plot_fills_the_frame_without_distorting_ink() -> None:
                      r'top:[\d.]+%"', html)
 
 
+def test_the_tile_can_never_scroll() -> None:
+    html = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+
+    assert "overflow:hidden" in html
+
+
+def test_the_tooltip_is_clamped_rather_than_centred() -> None:
+    """A centring transform put half the box past the right edge.
+
+    At the last reading (x ~ 986/1000) that overflowed the page and raised a
+    horizontal scrollbar, so the placement is computed and clamped in JS
+    instead. Asserted so the transform cannot quietly come back.
+    """
+    html = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+
+    tip_rule = re.search(r"#tip\{[^}]*\}", html, re.S).group(0)
+    assert "translate(" not in tip_rule
+
+    # Clamped horizontally against the frame, and flipped below the point when
+    # there is no room above it.
+    assert "Math.min(Math.max(px - tw / 2" in html
+    assert "frame.width - tw" in html
+    assert "no room above" in html
+
+
 def test_render_draws_both_series() -> None:
     html = render_chart_page(
         summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})

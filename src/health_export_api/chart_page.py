@@ -50,6 +50,10 @@ _MIN_FIT_POINTS = 3
 _W, _H = 1000, 320
 _PAD_L, _PAD_R, _PAD_T, _PAD_B = 46, 14, 16, 26
 
+# Tooltip placement, in CSS pixels: how far it stays clear of the frame edge,
+# and how far it sits from the point it describes.
+_TIP_EDGE, _TIP_GAP = 4, 10
+
 
 # ---------------------------------------------------------------------------
 # Series maths
@@ -205,7 +209,11 @@ _TEMPLATE = Template("""<!doctype html>
 <title>$title</title>
 <style>
 $palette
-  html,body{margin:0;height:100%;background:var(--surface);
+  /* A dashboard tile must never scroll. The tooltip is clamped inside the
+     frame below, but the hover dot is centred on its point and still pokes a
+     few pixels past the edge at the last reading — enough for a scrollbar on
+     its own. This closes the whole class rather than that one instance. */
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--surface);
     font:13px/1.4 $font;color:var(--ink)}
   /* The plot fills the frame in both axes. `preserveAspectRatio: none` is
      what makes that exact — "meet" would letterbox, leaving the chart short
@@ -234,7 +242,9 @@ $palette
   #dot{position:absolute;width:9px;height:9px;border-radius:50%;
        background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
        transform:translate(-50%,-50%);opacity:0;pointer-events:none}
-  #tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-115%);
+  /* No centring transform: the position is computed and clamped in JS, so
+     that half the box cannot hang off the right edge at the last reading. */
+  #tip{position:absolute;pointer-events:none;opacity:0;
        background:var(--surface);color:var(--ink);border:1px solid var(--axis);
        border-radius:6px;padding:5px 8px;white-space:nowrap;
        box-shadow:0 2px 8px rgba(0,0,0,.28);font-variant-numeric:tabular-nums}
@@ -280,15 +290,29 @@ $body
     cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
     cross.style.opacity = 1;
 
-    var left = (fracX(p.x) * 100) + '%', top = (fracY(y) * 100) + '%';
-    dot.style.left = left; dot.style.top = top;
+    dot.style.left = (fracX(p.x) * 100) + '%';
+    dot.style.top = (fracY(y) * 100) + '%';
     dot.style.opacity = 1;
 
     tip.innerHTML = '<span>' + p.label + '</span><br>' + p.rv + ' ' + d.unit +
       (hasTrend ? '<br><b>' + p.tv + ' ' + d.unit + '</b> <span>' + d.window +
                   '-day trend</span>' : '');
-    tip.style.left = left;
-    tip.style.top = top;
+
+    // Placed in pixels and clamped, rather than centred with a transform:
+    // centring puts half the box past the right edge at the last reading,
+    // which used to grow the page and raise a scrollbar. Measured after the
+    // content is set — opacity does not affect layout, so this is correct
+    // even on the first hover.
+    var frame = wrap.getBoundingClientRect();
+    var px = fracX(p.x) * frame.width, py = fracY(y) * frame.height;
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+
+    var left = Math.min(Math.max(px - tw / 2, $edge), frame.width - tw - $edge);
+    var top = py - th - $gap;
+    if (top < $edge) top = py + $gap;   // no room above: flip below the point
+
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
     tip.style.opacity = 1;
   }
   function hide(){ cross.style.opacity = 0; dot.style.opacity = 0; tip.style.opacity = 0; }
@@ -324,6 +348,7 @@ def render_chart_page(
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
+            edge=_TIP_EDGE, gap=_TIP_GAP,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -413,7 +438,7 @@ def render_chart_page(
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
-        vw=_W, vh=_H,
+        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )
