@@ -126,3 +126,30 @@ def test_a_truncated_export_file_does_not_break_the_listing(tmp_path: Path) -> N
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["exports"]] == [good.json()["id"]]
+
+
+def test_listing_reads_only_the_files_it_returns(tmp_path: Path, monkeypatch) -> None:
+    """Reading the whole archive to answer `limit=1` OOM-killed the pod.
+
+    A thousand exports is hundreds of megabytes, and they were all parsed just
+    to sort by a field inside them.
+    """
+    client = make_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    for index in range(6):
+        client.post("/v1/exports", headers=headers, json={"data": {"steps": index}})
+
+    reads: list[str] = []
+    original = Path.read_text
+
+    def counting_read(self, *args, **kwargs):
+        if self.suffix == ".json":
+            reads.append(self.name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read)
+    response = client.get("/v1/exports?limit=2", headers=headers)
+
+    assert response.status_code == 200
+    assert len(response.json()["exports"]) == 2
+    assert len(reads) == 2, f"parsed {len(reads)} files to return 2"

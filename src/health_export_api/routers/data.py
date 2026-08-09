@@ -33,18 +33,30 @@ def build_data_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    def _load_exports() -> list[dict[str, Any]]:
-        # A truncated file is skipped rather than raised. An upload that dies
-        # mid-write leaves one behind, and listing every *other* export is
-        # still the useful answer — one bad file used to 500 the endpoint.
-        records = []
-        for path in storage_dir.glob("*.json"):
+    def _load_exports(limit: int) -> list[dict[str, Any]]:
+        """The newest `limit` exports, parsing only the files it returns.
+
+        Ordered by mtime, which is when the file was written and so agrees with
+        the `received_at` inside it. That matters: reading all of them to sort
+        by a field *inside* them meant parsing the whole archive to answer
+        `limit=3` — a thousand exports is hundreds of MB, and it OOM-killed the
+        pod. Export ids are random, so the filename cannot carry the order.
+
+        A truncated file is skipped rather than raised. An upload that dies
+        mid-write leaves one behind, and the other exports are still the useful
+        answer — one bad file used to 500 the endpoint.
+        """
+        paths = sorted(storage_dir.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        records: list[dict[str, Any]] = []
+        for path in paths:
+            if len(records) == limit:
+                break
             try:
                 records.append(json.loads(path.read_text(encoding="utf-8")))
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 logger.warning("skipping unreadable export %s", path.name)
-        return sorted(records, key=lambda r: r.get("received_at") or "",
-                      reverse=True)
+        return records
 
     # -------------------------------------------------------------------------
     # Ingestion — shared by all export types (health metrics, workouts, etc.)
@@ -90,7 +102,7 @@ def build_data_router(
         authorization: str | None = Header(default=None),
     ) -> dict[str, list[dict[str, Any]]]:
         authorize(authorization)
-        return {"exports": _load_exports()[:limit]}
+        return {"exports": _load_exports(limit)}
 
     # -------------------------------------------------------------------------
     # Health metrics — /v1/health/
