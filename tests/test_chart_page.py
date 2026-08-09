@@ -155,7 +155,7 @@ def test_the_plot_fills_the_frame_without_distorting_ink() -> None:
     assert "vector-effect:non-scaling-stroke" in html
     # Tick text sits in HTML, positioned by percentage, so it is never scaled.
     assert "<text" not in html
-    assert re.search(r'class="tick ytick" style="left:max\(34px,[\d.]+%\);'
+    assert re.search(r'class="tick ytick" style="left:max\(var\(--ygut\),[\d.]+%\);'
                      r'top:[\d.]+%"', html)
 
 
@@ -211,6 +211,33 @@ def test_readouts_drop_meaningless_precision_at_step_scale() -> None:
     assert [p["v"][0]["rv"] for p in embedded(render_chart_page(tiny))["points"]] == [
         "0.0421", "0.0533"
     ]
+
+
+def ygut(html: str) -> float:
+    match = re.search(r"--ygut:([\d.]+)px", html)
+    assert match, "no y-gutter floor in the page"
+    return float(match.group(1))
+
+
+def test_the_y_gutter_grows_to_fit_the_widest_tick_label() -> None:
+    """A fixed gutter clipped "15,000" to "5,000" on the live steps card.
+
+    The gutter is a percentage of width with a pixel floor; the floor has to
+    come from the labels, because a five-digit grouped tick needs half again
+    the room a three-digit weight does.
+    """
+    weight = render_chart_page(
+        summary({f"2026-07-{i:02d}": 190.0 + i for i in range(1, 15)})
+    )
+    steps = render_chart_page(steps_and_distance())
+
+    # The steps panel's ticks run to "15,000" — six characters against three.
+    assert ygut(steps) > ygut(weight)
+    # Wide enough for the label it actually draws, at 12px tabular figures.
+    assert ygut(steps) >= 6 * 7.0
+
+    # A short label never shrinks the gutter below what the layout assumes.
+    assert ygut(weight) >= 34.0
 
 
 def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:

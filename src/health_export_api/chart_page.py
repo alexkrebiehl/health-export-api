@@ -206,6 +206,18 @@ def _path(points: Sequence[Point], sx, sy) -> str:
     return "M " + " L ".join(f"{sx(d):.1f},{sy(v):.1f}" for d, v in points)
 
 
+# Tick labels are 12px tabular-nums, so every digit takes one fixed advance
+# and the separators take less. Estimating the width from the string is what
+# lets the gutter fit the labels it actually has.
+_TICK_DIGIT_PX = 7.4
+_TICK_THIN_PX = 4.2
+_MIN_YGUT = 34.0
+
+
+def _tick_label_px(text: str) -> float:
+    return sum(_TICK_DIGIT_PX if ch.isdigit() else _TICK_THIN_PX for ch in text)
+
+
 # Above this, readouts are comma-grouped and lose their decimal: "9,162"
 # carries every digit that means anything on a step count. Matches the stat
 # tile's rule, so the tooltip and the tile beside it agree.
@@ -257,6 +269,7 @@ $palette
   .tick{position:absolute;color:var(--muted);font-size:12px;
         font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
   .ytick{transform:translate(-100%,-50%)}
+  :root{--ygut:${ygut}px}
   /* Pinned to the bottom edge rather than positioned by percentage: the label
      has a fixed height, so on a short frame a percentage puts it past the
      bottom and it gets clipped. */
@@ -436,7 +449,7 @@ def render_chart_page(
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
-            edge=_TIP_EDGE, gap=_TIP_GAP,
+            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -459,6 +472,7 @@ def render_chart_page(
     # placed at the same coordinates expressed as percentages.
     labels: list[str] = []
     series_meta: list[dict[str, Any]] = []
+    gutter_px = _MIN_YGUT
     by_day: list[dict[date, dict[str, Any]]] = []
 
     for index, (points, unit, label) in enumerate(panels):
@@ -477,15 +491,19 @@ def render_chart_page(
 
         for tick in _nice_ticks(low, high):
             y = sy(tick)
+            text = f"{tick:,g}"
             parts.append(f'<line class="grid" x1="{_PAD_L}" y1="{y:.1f}" '
                          f'x2="{_W - _PAD_R}" y2="{y:.1f}"/>')
             # The gutter is a percentage of width, so on a narrow frame it
             # collapses and a right-aligned label runs off the left edge. The
-            # floor keeps a four-digit tick on screen at any width.
+            # `--ygut` floor below keeps the widest label on screen at any
+            # width — it is measured from the labels, not fixed, because
+            # "15,000" needs half again the room "190" does.
+            gutter_px = max(gutter_px, _tick_label_px(text) + 2)
             labels.append(
                 f'<div class="tick ytick" '
-                f'style="left:max(34px,{(_PAD_L - 8) / _W * 100:.3f}%);'
-                f'top:{y / _H * 100:.3f}%">{tick:,g}</div>')
+                f'style="left:max(var(--ygut),{(_PAD_L - 8) / _W * 100:.3f}%);'
+                f'top:{y / _H * 100:.3f}%">{text}</div>')
 
         parts.append(f'<line class="axis" x1="{_PAD_L}" y1="{bottom:.1f}" '
                      f'x2="{_W - _PAD_R}" y2="{bottom:.1f}"/>')
@@ -544,7 +562,7 @@ def render_chart_page(
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
-        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP,
+        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1),
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )
