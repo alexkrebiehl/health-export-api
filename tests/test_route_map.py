@@ -1,4 +1,4 @@
-"""Tests for GET /v1/workouts/routes/map and the derived map token."""
+"""Tests for GET /v1/render/map and the derived map token."""
 import json
 import re
 from datetime import date
@@ -96,7 +96,7 @@ def test_map_page_accepts_the_derived_token(tmp_path: Path) -> None:
     ingest(client)
 
     response = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     )
 
     assert response.status_code == 200
@@ -107,7 +107,7 @@ def test_map_page_accepts_the_full_bearer_token(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest(client)
 
-    response = client.get("/v1/workouts/routes/map", headers=HEADERS, params=BOX)
+    response = client.get("/v1/render/map", headers=HEADERS, params=BOX)
 
     assert response.status_code == 200
 
@@ -115,12 +115,12 @@ def test_map_page_accepts_the_full_bearer_token(tmp_path: Path) -> None:
 def test_map_page_rejects_missing_and_wrong_tokens(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    assert client.get("/v1/workouts/routes/map", params=BOX).status_code == 401
+    assert client.get("/v1/render/map", params=BOX).status_code == 401
     assert client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": "nope"}
+        "/v1/render/map", params={**BOX, "embed_token": "nope"}
     ).status_code == 401
     assert client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN[:-1] + "0"}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN[:-1] + "0"}
     ).status_code == 401
 
 
@@ -144,7 +144,7 @@ def test_map_page_embeds_the_coverage_collection(tmp_path: Path) -> None:
     ingest(client)
 
     html = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
 
     collection = embedded(html)
@@ -162,11 +162,11 @@ def test_map_page_passes_filters_through_to_the_store(tmp_path: Path) -> None:
     ingest(client)
 
     demanding = embedded(client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "min_count": 99},
     ).text)
     filtered = embedded(client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "workout_type": "Outdoor Run"},
     ).text)
 
@@ -179,7 +179,7 @@ def test_map_page_renders_an_empty_area_without_failing(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
     response = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "lat": 48.85, "lon": 2.35, "embed_token": EMBED_TOKEN},
     )
 
@@ -191,7 +191,7 @@ def test_refresh_interval_is_configurable(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
     html = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "refresh_minutes": 5},
     ).text
 
@@ -202,10 +202,10 @@ def test_zoom_control_is_off_by_default_and_can_be_turned_on(tmp_path: Path) -> 
     client = make_client(tmp_path)
 
     default = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
     enabled = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "zoom_control": "true"},
     ).text
 
@@ -219,10 +219,10 @@ def test_attribution_is_on_by_default_and_survives_being_hidden(
     client = make_client(tmp_path)
 
     default = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
     hidden = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "attribution": "false"},
     ).text
 
@@ -237,10 +237,10 @@ def test_weight_scales_with_count_unless_pinned(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
     default = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
     pinned = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "weight": 3.5},
     ).text
 
@@ -255,7 +255,7 @@ def test_weight_must_be_a_sensible_stroke_width(tmp_path: Path) -> None:
 
     for bad in (0, -2, 25):
         response = client.get(
-            "/v1/workouts/routes/map",
+            "/v1/render/map",
             params={**BOX, "embed_token": EMBED_TOKEN, "weight": bad},
         )
         assert response.status_code == 422, f"weight={bad} should be rejected"
@@ -266,7 +266,7 @@ def test_the_map_is_non_interactive_by_default(tmp_path: Path) -> None:
     ingest(client)
 
     html = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
 
     assert "var interactive = false;" in html
@@ -284,7 +284,7 @@ def test_interactivity_can_be_turned_on(tmp_path: Path) -> None:
     ingest(client)
 
     html = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "interactive": "true"},
     ).text
 
@@ -298,7 +298,7 @@ def test_interactivity_is_independent_of_the_zoom_buttons(tmp_path: Path) -> Non
     ingest(client)
 
     html = client.get(
-        "/v1/workouts/routes/map",
+        "/v1/render/map",
         params={**BOX, "embed_token": EMBED_TOKEN, "zoom_control": "true"},
     ).text
 
@@ -312,7 +312,7 @@ def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> 
     ingest(client, name="</script><script>alert(1)</script>")
 
     html = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
 
     # Exactly the three script tags the template itself opens.

@@ -207,7 +207,7 @@ def test_presentation_options_do_not_change_the_cache_key(tmp_path: Path) -> Non
 
     # weight/zoom_control only affect rendering, so the coverage behind the
     # map page should still be the cached one.
-    html = client.get("/v1/workouts/routes/map",
+    html = client.get("/v1/render/map",
                       params={**BOX, "embed_token": EMBED_TOKEN, "weight": 4}).text
 
     assert '"workout_count":1' in html.replace(" ", "")
@@ -237,7 +237,7 @@ def test_the_map_page_also_sheds_when_the_queue_is_full(tmp_path: Path) -> None:
     client = make_client(tmp_path, max_queue=0)
 
     response = client.get(
-        "/v1/workouts/routes/map", params={**BOX, "embed_token": EMBED_TOKEN}
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     )
 
     assert response.status_code == 429

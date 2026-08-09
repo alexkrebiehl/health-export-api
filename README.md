@@ -22,6 +22,17 @@ All `/v1` endpoints require:
 Authorization: Bearer <TOKEN>
 ```
 
+The surface is split in two:
+
+| Prefix | Serves | Auth |
+|---|---|---|
+| `/v1/…` | JSON from storage | bearer token |
+| `/v1/render/…` | HTML pages built from that JSON | bearer token **or** `embed_token` |
+
+The render layer is a presentation tier over the data endpoints, not a peer of them: it reaches storage only through a provider whose returned payloads are the *same bodies* the data endpoints serve — `/v1/render/map` embeds exactly what `/v1/workouts/routes/geojson` returns, and `/v1/render/chart` renders exactly what `/v1/health/summary` returns. The render modules import no storage code at all, and a test enforces that.
+
+They share a process because the render tier is pure templating with no I/O; splitting it out would add a second credential, a second cache, and an extra transfer of the 1.4 MB coverage payload for no benefit at this size. If that changes — a second consumer, independent scaling, or heavy render dependencies — the provider is the only thing that would need replacing, with an HTTP client returning the same shapes.
+
 ### Ingestion
 
 | Method | Path | Description |
@@ -46,8 +57,8 @@ A stored record has this envelope:
 |---|---|---|
 | `GET` | `/v1/health/metrics` | List all metric names and units available across stored exports. |
 | `GET` | `/v1/health/summary` | Aggregate a metric over a date range. |
-| `GET` | `/v1/health/chart` | A metric's daily series with a rolling trend line, rendered for embedding. |
-| `GET` | `/v1/health/stat` | A single stat tile — latest reading, or week-over-week change. |
+| `GET` | `/v1/render/chart` | A metric's daily series with a rolling trend line, rendered for embedding. |
+| `GET` | `/v1/render/stat` | A single stat tile — latest reading, or week-over-week change. |
 
 **`GET /v1/health/summary` parameters:**
 
@@ -101,7 +112,7 @@ Apple Health workout sessions (Outdoor Walk, Outdoor Cycling, Paddle Sports, etc
 | `GET` | `/v1/workouts/summary` | Aggregate workout sessions over a date range. |
 | `GET` | `/v1/workouts/{workout_id}/route` | GPS route points for a single workout. |
 | `GET` | `/v1/workouts/routes/geojson` | GeoJSON coverage map of every route inside a geographic box. |
-| `GET` | `/v1/workouts/routes/map` | The same coverage rendered as a Leaflet page, for embedding in a dashboard. |
+| `GET` | `/v1/render/map` | The same coverage rendered as a Leaflet page, for embedding in a dashboard. |
 | `GET` | `/v1/embed-token` | The derived read-only token that unlocks the map page. |
 
 **`GET /v1/workouts/types` parameters:**
@@ -197,7 +208,7 @@ Notes:
 
 #### Rendered map page
 
-`GET /v1/workouts/routes/map` returns the same coverage as a self-contained Leaflet page — built for a Home Assistant **Webpage (`iframe`) card**, but usable in any dashboard that embeds a URL. It accepts every parameter the GeoJSON endpoint does, so the URL is the tuning surface, plus:
+`GET /v1/render/map` returns the same coverage as a self-contained Leaflet page — built for a Home Assistant **Webpage (`iframe`) card**, but usable in any dashboard that embeds a URL. It accepts every parameter the GeoJSON endpoint does, so the URL is the tuning surface, plus:
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -242,15 +253,15 @@ Then embed:
 
 ```yaml
 type: iframe
-url: https://your-host/v1/workouts/routes/map?lat=52.52&lon=13.40&width=4000&height=4000&min_count=3&embed_token=…
+url: https://your-host/v1/render/map?lat=52.52&lon=13.40&width=4000&height=4000&min_count=3&embed_token=…
 aspect_ratio: 100%
 ```
 
-Every other endpoint still requires the real bearer token; `embed_token` unlocks only the embeddable pages (`/v1/workouts/routes/map` and `/v1/health/chart`).
+Every other endpoint still requires the real bearer token; `embed_token` unlocks only the embeddable pages (`/v1/render/map` and `/v1/render/chart`).
 
 ### Metric chart
 
-`GET /v1/health/chart` renders a metric's daily series as a line chart, with a bold rolling trend line over the day-to-day readings — the companion to the map card, for embedding the same way.
+`GET /v1/render/chart` renders a metric's daily series as a line chart, with a bold rolling trend line over the day-to-day readings — the companion to the map card, for embedding the same way.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -271,13 +282,13 @@ The y axis is **zoomed to the data, never zero-based** — body weight moves a f
 
 ```yaml
 type: iframe
-url: https://your-host/v1/health/chart?metric=weight_body_mass&date_range=last+90+days&window=7&embed_token=…
+url: https://your-host/v1/render/chart?metric=weight_body_mass&date_range=last+90+days&window=7&embed_token=…
 grid_options: {columns: full, rows: 6}
 ```
 
 ### Stat tile
 
-`GET /v1/health/stat` renders one number — for the questions that are a figure rather than a plot.
+`GET /v1/render/stat` renders one number — for the questions that are a figure rather than a plot.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -299,7 +310,7 @@ grid_options: {columns: full, rows: 6}
 
 ```yaml
 type: iframe
-url: https://your-host/v1/health/stat?metric=weight_body_mass&stat=change&good_direction=down&embed_token=…
+url: https://your-host/v1/render/stat?metric=weight_body_mass&stat=change&good_direction=down&embed_token=…
 grid_options: {columns: 4, rows: 3}
 ```
 

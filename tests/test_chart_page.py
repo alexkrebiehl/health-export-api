@@ -225,11 +225,11 @@ def ingest_weight(client: TestClient, readings: dict[str, float]) -> None:
 def test_chart_endpoint_requires_a_token(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    unauthorised = client.get("/v1/health/chart",
+    unauthorised = client.get("/v1/render/chart",
                               params={"metric": "weight_body_mass"})
-    authorised = client.get("/v1/health/chart", headers=HEADERS,
+    authorised = client.get("/v1/render/chart", headers=HEADERS,
                             params={"metric": "weight_body_mass"})
-    embedded_ok = client.get("/v1/health/chart",
+    embedded_ok = client.get("/v1/render/chart",
                              params={"metric": "weight_body_mass",
                                      "embed_token": EMBED_TOKEN})
 
@@ -243,7 +243,7 @@ def test_chart_endpoint_plots_ingested_readings(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest_weight(client, {f"2026-07-{i:02d}": 190.0 + i * 0.2 for i in range(1, 11)})
 
-    html = client.get("/v1/health/chart",
+    html = client.get("/v1/render/chart",
                       params={"metric": "weight_body_mass",
                               "embed_token": EMBED_TOKEN}).text
 
@@ -260,7 +260,7 @@ def test_window_zero_omits_the_average(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest_weight(client, {f"2026-07-{i:02d}": 190.0 + i for i in range(1, 11)})
 
-    html = client.get("/v1/health/chart",
+    html = client.get("/v1/render/chart",
                       params={"metric": "weight_body_mass", "window": 0,
                               "embed_token": EMBED_TOKEN}).text
 
@@ -271,7 +271,7 @@ def test_window_zero_omits_the_average(tmp_path: Path) -> None:
 def test_an_unknown_metric_renders_an_empty_state(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    response = client.get("/v1/health/chart",
+    response = client.get("/v1/render/chart",
                           params={"metric": "not_a_metric",
                                   "embed_token": EMBED_TOKEN})
 
@@ -282,7 +282,7 @@ def test_an_unknown_metric_renders_an_empty_state(tmp_path: Path) -> None:
 def test_a_half_specified_date_range_is_rejected(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    response = client.get("/v1/health/chart",
+    response = client.get("/v1/render/chart",
                           params={"metric": "weight_body_mass",
                                   "start_date": "2026-07-01",
                                   "embed_token": EMBED_TOKEN})

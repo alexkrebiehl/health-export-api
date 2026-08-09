@@ -229,7 +229,7 @@ def ingest_weight(client: TestClient, readings: dict[str, float]) -> None:
 
 
 def stat(client: TestClient, **params: Any):
-    return client.get("/v1/health/stat",
+    return client.get("/v1/render/stat",
                       params={"metric": "weight_body_mass",
                               "embed_token": EMBED_TOKEN, **params})
 
@@ -237,7 +237,7 @@ def stat(client: TestClient, **params: Any):
 def test_stat_endpoint_requires_a_token(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    assert client.get("/v1/health/stat",
+    assert client.get("/v1/render/stat",
                       params={"metric": "weight_body_mass"}).status_code == 401
     assert stat(client).status_code == 200
 
@@ -277,7 +277,7 @@ def test_change_stat_without_enough_history_says_so(tmp_path: Path) -> None:
 def test_an_unknown_metric_renders_an_empty_tile(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
-    response = client.get("/v1/health/stat",
+    response = client.get("/v1/render/stat",
                           params={"metric": "nope", "embed_token": EMBED_TOKEN})
 
     assert response.status_code == 200
