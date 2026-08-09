@@ -14,6 +14,7 @@ from health_export_api.chart_page import (
     window_change,
     zero_fill_today,
 )
+from health_export_api.page_shell import MAX_MARGIN, PageOptions
 from health_export_api.stat_page import (
     render_balance_tile,
     render_change_tile,
@@ -152,38 +153,48 @@ def _padding(html: str) -> tuple[float, float]:
     return float(m.group(1)), float(m.group(2))
 
 
+def _page_pad(html: str) -> float:
+    """The shell's inset, as a percentage of the frame."""
+    return float(re.search(r"#page\{[^}]*padding:([\d.]+)%", html).group(1))
+
+
 def test_margin_defaults_to_no_change() -> None:
     plain = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY)
     zero = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
-                              margin=0)
+                              options=PageOptions(margin=0))
 
     assert plain == zero
+    assert _page_pad(plain) == 0.0
+    # The tile's own base padding is untouched by the option.
     assert _padding(plain) == (3.0, 4.0)
 
 
-def test_a_margin_widens_padding_and_narrows_the_budget() -> None:
-    """The coupling: padding and the text budget must move together.
+def test_a_margin_insets_the_container_the_type_is_measured_against() -> None:
+    """Padding and the text budget still move together — but not by hand.
 
-    Growing the padding without shrinking the budget would push the text
-    straight out of the tile, which is the whole hazard of this parameter.
+    The tile sizes itself in container-query units, and the container is the
+    box the shell pads. So a margin shrinks the box the budgets are shares
+    *of*, which is what the old arithmetic in stat_page was approximating.
+    Growing the padding without shrinking the type would push it out of the
+    tile, and that is still the hazard being avoided.
     """
     tight = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY)
     roomy = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
-                               margin=8)
+                               options=PageOptions(margin=8))
 
-    assert _padding(roomy) == (11.0, 12.0)
-    assert _budget(roomy) < _budget(tight)
+    assert _page_pad(tight) == 0.0
+    assert _page_pad(roomy) == 8.0
+    # The budgets are now constants, because the container carries the margin.
+    assert _budget(roomy) == _budget(tight)
+    assert _value_sizes(roomy) == _value_sizes(tight)
 
-    # And the height budget shrinks too, so the column still fits vertically.
-    assert _value_sizes(roomy)[0] == _value_sizes(tight)[0] - 16.0
 
-
-def test_margin_is_clamped_so_the_budget_stays_positive() -> None:
+def test_margin_is_clamped_so_something_is_left_to_render_into() -> None:
     html = render_latest_tile((d("2026-07-12"), 191.4), unit="lb", today=TODAY,
-                              margin=999)
+                              options=PageOptions(margin=999))
 
-    assert _budget(html) > 0
-    assert _padding(html) == (23.0, 24.0)
+    assert _page_pad(html) == MAX_MARGIN
+    assert _page_pad(html) * 2 < 100, "the padding must not consume the frame"
 
 
 def test_alignment_defaults_to_left_and_can_be_centred() -> None:
@@ -199,10 +210,10 @@ def test_alignment_defaults_to_left_and_can_be_centred() -> None:
 
 
 def test_margin_and_alignment_reach_the_change_tile_too() -> None:
-    html = render_change_tile((191.0, 193.0, -2.0), unit="lb", margin=6,
-                              align="center")
+    html = render_change_tile((191.0, 193.0, -2.0), unit="lb", align="center",
+                              options=PageOptions(margin=6))
 
-    assert _padding(html) == (9.0, 10.0)
+    assert _page_pad(html) == 6.0
     assert "text-align:center" in html
 
 
@@ -554,5 +565,5 @@ def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:
 
     html = stat(client, margin=10, align="center").text
 
-    assert "padding:13.0cqh 14.0cqw" in html
+    assert _page_pad(html) == 10.0
     assert "align-items:center;text-align:center" in html

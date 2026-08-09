@@ -26,29 +26,21 @@ from datetime import date
 from string import Template
 from typing import Literal
 
-from health_export_api.theme import FONT_STACK, PALETTE_CSS
+from health_export_api.page_shell import PageOptions, render_page
 
 GoodDirection = Literal["up", "down", "none"]
 
-_TEMPLATE = Template("""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>$title</title>
-<style>
-$palette
-  html,body{margin:0;height:100%;background:var(--surface);
-    font:13px/1.4 $font;color:var(--ink)}
-  /* A *size* container, not inline-size: the text has to react to height as
+_STYLE = """  /* A *size* container, not inline-size: the text has to react to height as
      well as width. With inline-size only `cqw` is available, so a short wide
      tile could not use its height and a narrow one shrank the type even with
      vertical room to spare.
 
+     The container is the shell's #page, which is already the *padded* box, so
+     these budgets account for the caller's margin without arithmetic here.
+
      Each size is the smaller of two budgets — a share of the height (`cqh`)
      and a share of the width (`cqw`) — so whichever dimension binds first
      wins, and the text neither overflows nor leaves the tile half empty. */
-  body{container-type:size}
   #tile{height:100%;display:flex;flex-direction:column;justify-content:center;
         align-items:${align_items};text-align:${align};
         gap:1.5cqh;padding:${pad_v}cqh ${pad_h}cqw;box-sizing:border-box}
@@ -65,18 +57,14 @@ $palette
   .good{color:var(--good)}
   .bad{color:var(--bad)}
   .empty{color:var(--muted)}
-</style>
-</head>
-<body>
-<div id="tile">
+"""
+
+_BODY = """<div id="tile">
   <div class="label">$label</div>
   <div class="value $tone">$value</div>
   <div class="note">$note</div>
 </div>
-<script>setTimeout(function(){location.reload();}, $refresh_ms);</script>
-</body>
-</html>
-""")
+"""
 
 
 # Approximate advance widths, in em, for the system sans. Only good to a few
@@ -100,22 +88,18 @@ _WIDTH_SLACK = 8.0
 # (14), note (12), gaps (3) and padding (2x3) this leaves ~13 spare.
 _BASE_VALUE_CQH = 52.0
 
-# A margin bigger than this would leave nothing to typeset into.
-MAX_MARGIN = 20.0
-
 Align = Literal["left", "center", "right"]
 
 _ALIGN_ITEMS = {"left": "flex-start", "center": "center", "right": "flex-end"}
 
 
-def _width_budget(margin: float) -> float:
-    """Share of the tile's width the text may occupy at a given margin.
+def _width_budget() -> float:
+    """Share of the container's width the text may occupy.
 
-    Derived rather than constant: the font sizes are the smaller of a width and
-    a height budget, so a margin that widened the padding without narrowing the
-    budget would push the text straight out of the tile.
+    A constant now: the caller's margin shrinks the container itself, so it no
+    longer has to be subtracted here as well.
     """
-    return 100.0 - 2.0 * (_BASE_PAD_H + margin) - _WIDTH_SLACK
+    return 100.0 - 2.0 * _BASE_PAD_H - _WIDTH_SLACK
 
 
 def _em_width(text: str) -> float:
@@ -158,16 +142,14 @@ def render_latest_tile(
     *,
     unit: str = "",
     label: str = "Current",
-    refresh_minutes: int = 30,
     today: date | None = None,
-    margin: float = 0.0,
     align: Align = "left",
     integral: bool = False,
+    options: PageOptions = PageOptions(),
 ) -> str:
     """Tile showing the most recent reading and how fresh it is."""
     if reading is None:
-        return _render(label, "—", "", "No readings yet", "", refresh_minutes,
-                       margin, align)
+        return _render(label, "—", "", "No readings yet", "", align, options)
 
     day, value = reading
     age = ((today or date.today()) - day).days
@@ -178,8 +160,7 @@ def render_latest_tile(
     else:
         note = f"{age} days ago"
     note += day.strftime(" · %-d %b")
-    return _render(label, _fmt(value, integral), unit, note, "", refresh_minutes,
-                   margin, align)
+    return _render(label, _fmt(value, integral), unit, note, "", align, options)
 
 
 def render_change_tile(
@@ -189,16 +170,15 @@ def render_change_tile(
     label: str = "Weekly trend",
     window_days: int = 7,
     good_direction: GoodDirection = "none",
-    refresh_minutes: int = 30,
-    margin: float = 0.0,
     align: Align = "left",
     integral: bool = False,
+    options: PageOptions = PageOptions(),
 ) -> str:
     """Tile showing a signed week-over-week change."""
     if change is None:
         return _render(label, "—", "",
                        f"Not enough readings for {window_days} days",
-                       "", refresh_minutes, margin, align)
+                       "", align, options)
 
     _, _, delta = change
     arrow = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
@@ -211,7 +191,7 @@ def render_change_tile(
     )
     tone = "good" if improving else ""
     return _render(label, value, unit, f"vs previous {window_days} days",
-                   tone, refresh_minutes, margin, align)
+                   tone, align, options)
 
 
 def render_balance_tile(
@@ -220,10 +200,9 @@ def render_balance_tile(
     unit: str = "",
     label: str = "7-day balance",
     window_days: int = 7,
-    refresh_minutes: int = 30,
-    margin: float = 0.0,
     align: Align = "left",
     integral: bool = False,
+    options: PageOptions = PageOptions(),
 ) -> str:
     """Tile showing energy in minus energy out: a deficit or a surplus.
 
@@ -238,7 +217,7 @@ def render_balance_tile(
     """
     if balance is None:
         return _render(label, "—", "", "No days with intake logged",
-                       "", refresh_minutes, margin, align)
+                       "", align, options)
 
     net, days = balance
     deficit = net < 0
@@ -258,7 +237,7 @@ def render_balance_tile(
             covered += f" of {window_days}"
     tone = "good" if deficit else ("bad" if net else "")
     return _render(label, value, unit, f"{word} · {covered}",
-                   tone, refresh_minutes, margin, align)
+                   tone, align, options)
 
 
 def _render(
@@ -267,35 +246,32 @@ def _render(
     unit: str,
     note: str,
     tone: str,
-    refresh_minutes: int,
-    margin: float = 0.0,
-    align: Align = "left",
+    align: Align,
+    options: PageOptions,
 ) -> str:
     # The unit rides at 0.45em with a 0.22em gap, so it costs proportionally
     # less width than its character count suggests.
     value_em = _em_width(main) + (0.22 + _em_width(unit) * 0.45 if unit else 0.0)
     value_html = main + (f'<span class="unit">{unit}</span>' if unit else "")
 
-    margin = max(0.0, min(margin, MAX_MARGIN))
-    budget = _width_budget(margin)
+    # No margin arithmetic here any more. The shell pads #page and #page is the
+    # container these cq units resolve against, so a margin shrinks the box the
+    # budgets are shares *of* — which is what the hand-rolled coupling was
+    # approximating.
+    budget = _width_budget()
 
-    return _TEMPLATE.substitute(
-        title=label,
-        label=label,
-        value=value_html,
-        note=note,
-        tone=tone,
+    style = Template(_STYLE).substitute(
         align=align,
         align_items=_ALIGN_ITEMS[align],
-        pad_h=round(_BASE_PAD_H + margin, 2),
-        pad_v=round(_BASE_PAD_V + margin, 2),
-        # Both budgets shrink with the margin so the text keeps fitting.
-        value_cqh=round(_BASE_VALUE_CQH - 2.0 * margin, 2),
+        pad_h=_BASE_PAD_H,
+        pad_v=_BASE_PAD_V,
+        value_cqh=_BASE_VALUE_CQH,
         # Caps stop a very short string ballooning past the height budget.
         value_cqw=_cqw_from_em(value_em, budget, cap=40.0),
         label_cqw=_cqw_for(label, budget, cap=9.0),
         note_cqw=_cqw_for(note, budget, cap=8.0),
-        palette=PALETTE_CSS,
-        font=FONT_STACK,
-        refresh_ms=refresh_minutes * 60_000,
     )
+    body = Template(_BODY).substitute(
+        label=label, value=value_html, note=note, tone=tone
+    )
+    return render_page(body=body, style=style, options=options.with_title(label))

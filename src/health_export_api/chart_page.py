@@ -34,7 +34,7 @@ from math import ceil, floor, log10
 from string import Template
 from typing import Any, Sequence
 
-from health_export_api.theme import FONT_STACK, PALETTE_CSS
+from health_export_api.page_shell import PageOptions, render_page
 
 Point = tuple[date, float]
 
@@ -415,21 +415,7 @@ def _readout(value: float, integral: bool = False) -> str:
     return f"{value:g}"
 
 
-_TEMPLATE = Template("""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>$title</title>
-<style>
-$palette
-  /* A dashboard tile must never scroll. The tooltip is clamped inside the
-     frame below, but the hover dot is centred on its point and still pokes a
-     few pixels past the edge at the last reading — enough for a scrollbar on
-     its own. This closes the whole class rather than that one instance. */
-  html,body{margin:0;height:100%;overflow:hidden;background:var(--surface);
-    font:13px/1.4 $font;color:var(--ink)}
-  /* The plot fills the frame in both axes. `preserveAspectRatio: none` is
+_STYLE = Template("""  /* The plot fills the frame in both axes. `preserveAspectRatio: none` is
      what makes that exact — "meet" would letterbox, leaving the chart short
      of the card's height. Stretching the geometry is fine for a value scale,
      but it must not stretch the ink: every stroked element carries
@@ -501,10 +487,10 @@ $palette
   #tip span{color:var(--ink-2)}
   .empty{position:absolute;inset:0;display:flex;align-items:center;
          justify-content:center;color:var(--muted);text-align:center;padding:20px}
-</style>
-</head>
-<body>
-<div id="wrap">
+""")
+
+
+_BODY = Template("""<div id="wrap">
 $body
 </div>
 <script type="application/json" id="data">$data</script>
@@ -619,9 +605,6 @@ $body
   }, {passive:true});
 })();
 </script>
-<script>setTimeout(function(){location.reload();}, $refresh_ms);</script>
-</body>
-</html>
 """)
 
 
@@ -659,8 +642,8 @@ def render_chart_page(
     layout: str = "grouped",
     legend: bool | None = None,
     baseline: float | None = None,
-    refresh_minutes: int = 30,
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
+    options: PageOptions = PageOptions(),
 ) -> str:
     """Render one or more metric summaries as a standalone SVG chart page.
 
@@ -697,6 +680,12 @@ def render_chart_page(
     """
     if isinstance(summaries, dict):
         summaries = [summaries]
+
+    # One title for both the document and the plot's accessible name: an
+    # explicit `title` should rename what a screen reader announces, not just
+    # the browser tab.
+    options = options.with_title(title)
+    title = options.title
 
     # An override per series, positionally. `step_count`'s stored unit is the
     # literal string "count", which reads as noise beside the number, so an
@@ -738,13 +727,14 @@ def render_chart_page(
     if not panels:
         body = '<div class="empty">No readings in this period.</div>'
         payload = {"points": [], "series": [], "window": window}
-        return _TEMPLATE.substitute(
-            title=title, body=body,
-            palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
-            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP,
-            xgut=_XGUT, xgutgap=_XGUT_GAP, keygut=0,
-            data=json.dumps(payload).replace("<", "\\u003c"),
-            refresh_ms=refresh_minutes * 60_000,
+        return render_page(
+            style=_STYLE.substitute(
+                vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT,
+                ygutgap=_YGUT_GAP, xgut=_XGUT, xgutgap=_XGUT_GAP, keygut=0),
+            body=_BODY.substitute(
+                body=body, vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP,
+                data=json.dumps(payload).replace("<", "\\u003c")),
+            options=options,
         )
 
     # One shared x scale across every panel.
@@ -978,10 +968,13 @@ def render_chart_page(
         # bar, so the hover needs the slot rather than the bar width.
         payload["slot"] = round(slot_w, 1)
 
-    return _TEMPLATE.substitute(
-        title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
-        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1), ygutgap=_YGUT_GAP,
-        xgut=_XGUT, xgutgap=_XGUT_GAP, keygut=_KEYGUT if key else 0,
-        data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
-        refresh_ms=refresh_minutes * 60_000,
+    return render_page(
+        style=_STYLE.substitute(
+            vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1),
+            ygutgap=_YGUT_GAP, xgut=_XGUT, xgutgap=_XGUT_GAP,
+            keygut=_KEYGUT if key else 0),
+        body=_BODY.substitute(
+            body=body, vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP,
+            data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")),
+        options=options,
     )

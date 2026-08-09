@@ -315,8 +315,9 @@ def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> 
         "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
     ).text
 
-    # Exactly the three script tags the template itself opens.
-    assert html.count("<script") == 3
+    # Exactly the four script tags the page itself opens: the coverage JSON,
+    # Leaflet, the map's own IIFE, and the shell's reload timer.
+    assert html.count("<script") == 4
     assert "</script><script>alert(1)" not in html
     # ...and the name still round-trips intact once parsed.
     assert embedded(html)["features"][0]["properties"]["workout_types"] == [

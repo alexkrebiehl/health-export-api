@@ -69,7 +69,7 @@ def create_app(
     store = Store(db_path)
     store.backfill(storage_dir)
 
-    app = FastAPI(title="Health Export API", version="0.9.0")
+    app = FastAPI(title="Health Export API", version="0.10.0")
 
     # Stock Leaflet, served same-origin so the map page has no CDN dependency.
     # Unauthenticated: it is open-source library code, not user data.

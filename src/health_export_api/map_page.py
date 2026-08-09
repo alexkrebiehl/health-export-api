@@ -20,32 +20,31 @@ import json
 from string import Template
 from typing import Any
 
+from health_export_api.page_shell import PageOptions, render_page
+
 # Perceptual ramp from cool to hot, walked from least to most travelled.
 _RAMP = [(43, 58, 103), (42, 127, 168), (63, 174, 142), (224, 195, 65), (232, 80, 58)]
 
-_TEMPLATE = Template("""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>$title</title>
-<link rel="stylesheet" href="/static/leaflet.css">
-<style>
-  html,body{margin:0;height:100%;background:#0b0e14}
-  #map{position:absolute;inset:0;background:#0b0e14}
-  .leaflet-container{background:#0b0e14;font:12px system-ui,sans-serif}
-  .info{background:rgba(11,14,20,.82);color:#c9d1d9;padding:6px 9px;border-radius:6px;
+_HEAD = '<link rel="stylesheet" href="/static/leaflet.css">'
+
+# Was a hardcoded slate palette that ignored `theme.py` entirely, which made
+# this the one card that never followed the viewer's light/dark setting even
+# though its basemap tiles always did.
+_STYLE = Template("""  #map{position:absolute;inset:0;background:var(--surface)}
+  .leaflet-container{background:var(--surface);font:12px system-ui,sans-serif}
+  .info{background:color-mix(in srgb,var(--surface) 82%, transparent);
+        color:var(--ink-2);padding:6px 9px;border-radius:6px;
         line-height:1.5;box-shadow:0 1px 4px rgba(0,0,0,.5)}
-  .info b{color:#e6edf3;font-weight:600}
+  .info b{color:var(--ink);font-weight:600}
   .scale{display:flex;align-items:center;gap:5px;margin-top:5px}
   .scale i{width:52px;height:5px;border-radius:3px;display:block;
            background:linear-gradient(90deg,$gradient)}
-  .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-         color:#8b949e;font:14px system-ui,sans-serif;text-align:center;padding:20px}
-</style>
-</head>
-<body>
-<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap contributors.
+  .empty{position:absolute;inset:0;display:flex;align-items:center;
+         justify-content:center;color:var(--muted);text-align:center;padding:20px}
+""")
+
+
+_BODY = Template("""<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap contributors.
      https://www.openstreetmap.org/copyright https://carto.com/attributions
      Kept here so the credit survives even when the on-map control is hidden. -->
 <div id="map"></div>
@@ -67,7 +66,10 @@ _TEMPLATE = Template("""<!doctype html>
     doubleClickZoom: interactive, touchZoom: interactive,
     boxZoom: interactive, keyboard: interactive
   });
-  var dark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+  // An explicit ?theme wins; otherwise follow the viewer, as before.
+  var stamped = document.documentElement.getAttribute('data-theme');
+  var dark = stamped ? stamped === 'dark'
+    : (!window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches);
   L.tileLayer(
     'https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') +
     '/{z}/{x}/{y}{r}.png',
@@ -149,13 +151,8 @@ _TEMPLATE = Template("""<!doctype html>
   };
   info.addTo(map);
 
-  // New workouts arrive by export, so refresh periodically rather than leaving
-  // a stale tile up indefinitely.
-  setTimeout(function () { location.reload(); }, $refresh_ms);
 })();
 </script>
-</body>
-</html>
 """)
 
 
@@ -163,11 +160,11 @@ def render_map_page(
     collection: dict[str, Any],
     *,
     title: str = "Exercise coverage",
-    refresh_minutes: int = 30,
     zoom_control: bool = False,
     attribution: bool = True,
     interactive: bool = False,
     weight: float | None = None,
+    options: PageOptions = PageOptions(),
 ) -> str:
     """Render a coverage FeatureCollection as a standalone Leaflet page.
 
@@ -195,14 +192,16 @@ def render_map_page(
     # the <script> block early.
     data = json.dumps(collection, separators=(",", ":")).replace("<", "\\u003c")
     gradient = ",".join(f"rgb({r},{g},{b})" for r, g, b in _RAMP)
-    return _TEMPLATE.substitute(
-        title=title,
-        data=data,
-        ramp=json.dumps([list(c) for c in _RAMP]),
-        gradient=gradient,
-        refresh_ms=refresh_minutes * 60_000,
-        zoom_control="true" if zoom_control else "false",
-        attribution="true" if attribution else "false",
-        interactive="true" if interactive else "false",
-        weight="null" if weight is None else repr(float(weight)),
+    return render_page(
+        head=_HEAD,
+        style=_STYLE.substitute(gradient=gradient),
+        body=_BODY.substitute(
+            data=data,
+            ramp=json.dumps([list(c) for c in _RAMP]),
+            zoom_control="true" if zoom_control else "false",
+            attribution="true" if attribution else "false",
+            interactive="true" if interactive else "false",
+            weight="null" if weight is None else repr(float(weight)),
+        ),
+        options=options.with_title(title),
     )

@@ -30,8 +30,9 @@ from health_export_api.chart_page import (
 from health_export_api.map_page import render_map_page
 from health_export_api.provider import DataProvider
 from health_export_api.routers import domain_errors
+from health_export_api.page_shell import PageOptions
+from health_export_api.routers.options import PageDep, SpanDep, Timeframe
 from health_export_api.stat_page import (
-    MAX_MARGIN,
     render_balance_tile,
     render_change_tile,
     render_latest_tile,
@@ -65,26 +66,25 @@ def build_render_router(
         lon: float = Query(default=..., ge=-180, le=180),
         width: float = Query(default=..., gt=0),
         height: float = Query(default=..., gt=0),
-        date_range: str | None = Query(default=None),
-        start_date: str | None = Query(default=None),
-        end_date: str | None = Query(default=None),
         workout_type: list[str] | None = Query(default=None),
         max_vertices: int = Query(default=50_000, ge=100, le=200_000),
         tolerance_m: float = Query(default=15.0, ge=1, le=1000),
         min_count: int = Query(default=1, ge=1, le=1000),
-        refresh_minutes: int = Query(default=30, ge=1, le=1440),
         zoom_control: bool = Query(default=False),
         attribution: bool = Query(default=True),
         interactive: bool = Query(default=False),
         weight: float | None = Query(default=None, gt=0, le=20),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
+        page: PageOptions = PageDep,
+        span: Timeframe = SpanDep,
     ) -> HTMLResponse:
         """Rendered coverage map, for embedding in a Home Assistant iframe."""
         authorize_embed(authorization, embed_token)
         with domain_errors():
             range_start, range_end = provider.resolve_range(
-                date_range=date_range, start_date=start_date, end_date=end_date
+                date_range=span.date_range, start_date=span.start_date,
+                end_date=span.end_date,
             )
             collection = provider.coverage(
                 lat=lat,
@@ -101,7 +101,7 @@ def build_render_router(
         return HTMLResponse(
             render_map_page(
                 collection,
-                refresh_minutes=refresh_minutes,
+                options=page,
                 zoom_control=zoom_control,
                 attribution=attribution,
                 interactive=interactive,
@@ -115,18 +115,15 @@ def build_render_router(
         label: list[str] | None = Query(default=None),
         unit: list[str] | None = Query(default=None),
         stack: list[str] | None = Query(default=None),
-        date_range: str | None = Query(default=None),
-        start_date: str | None = Query(default=None),
-        end_date: str | None = Query(default=None),
         window: int = Query(default=7, ge=0, le=365),
         kind: str = Query(default="line", pattern="^(line|bar)$"),
         layout: str = Query(default="grouped", pattern="^(grouped|overlay)$"),
         legend: bool | None = Query(default=None),
         baseline: float | None = Query(default=None),
-        title: str | None = Query(default=None),
-        refresh_minutes: int = Query(default=30, ge=1, le=1440),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
+        page: PageOptions = PageDep,
+        span: Timeframe = SpanDep,
     ) -> HTMLResponse:
         """Daily series with a rolling trend line, for embedding.
 
@@ -150,9 +147,9 @@ def build_render_router(
             # Unlike the summary endpoints the timeframe is optional here, so
             # the card URL can stay short; three months is the useful default.
             range_start, range_end = provider.resolve_range(
-                date_range=date_range,
-                start_date=start_date,
-                end_date=end_date,
+                date_range=span.date_range,
+                start_date=span.start_date,
+                end_date=span.end_date,
                 default_range="last 90 days",
             )
             summaries = [
@@ -171,7 +168,7 @@ def build_render_router(
         return HTMLResponse(
             render_chart_page(
                 summaries,
-                title=title or names[0],
+                title=names[0],
                 series_labels=list(label or []) or names,
                 series_units=list(unit or []),
                 series_stacks=list(stack or []),
@@ -180,7 +177,7 @@ def build_render_router(
                 layout=layout,
                 legend=legend,
                 baseline=baseline,
-                refresh_minutes=refresh_minutes,
+                options=page,
             )
         )
 
@@ -193,11 +190,10 @@ def build_render_router(
         label: str | None = Query(default=None),
         good_direction: str = Query(default="none", pattern="^(up|down|none)$"),
         unit: str | None = Query(default=None),
-        margin: float = Query(default=0.0, ge=0, le=MAX_MARGIN),
         align: str = Query(default="left", pattern="^(left|center|right)$"),
-        refresh_minutes: int = Query(default=30, ge=1, le=1440),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
+        page: PageOptions = PageDep,
     ) -> HTMLResponse:
         """A single stat tile for a metric, for embedding beside the chart.
 
@@ -243,10 +239,9 @@ def build_render_router(
                     unit=label_unit,
                     label=label or f"{window}-day balance",
                     window_days=window,
-                    refresh_minutes=refresh_minutes,
-                    margin=margin,
                     align=align,  # type: ignore[arg-type]
                     integral=integral,
+                    options=page,
                 )
             )
 
@@ -258,10 +253,9 @@ def build_render_router(
                     label=label or "Weekly trend",
                     window_days=window,
                     good_direction=good_direction,  # type: ignore[arg-type]
-                    refresh_minutes=refresh_minutes,
-                    margin=margin,
                     align=align,  # type: ignore[arg-type]
                     integral=integral,
+                    options=page,
                 )
             )
         return HTMLResponse(
@@ -269,11 +263,10 @@ def build_render_router(
                 latest_reading(points),
                 unit=label_unit,
                 label=label or "Current",
-                refresh_minutes=refresh_minutes,
                 today=today,
-                margin=margin,
                 align=align,  # type: ignore[arg-type]
                 integral=integral,
+                options=page,
             )
         )
 

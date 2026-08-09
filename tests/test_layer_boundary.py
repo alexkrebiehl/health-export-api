@@ -73,7 +73,9 @@ def test_the_page_modules_are_pure_templating() -> None:
     # trivially testable and portable to another process.
     for name in ("map_page.py", "chart_page.py", "stat_page.py"):
         imports = imported_modules(SRC / name)
-        assert imports <= {"theme"}, f"{name} imports {imports}"
+        # `page_shell` owns the head, palette and reload script every page
+        # repeats; it is framework-free for exactly this reason.
+        assert imports <= {"theme", "page_shell"}, f"{name} imports {imports}"
 
 
 # ---------------------------------------------------------------------------

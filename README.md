@@ -212,7 +212,6 @@ Notes:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `refresh_minutes` | `30` | How often the page reloads itself to pick up new workouts. |
 | `interactive` | `false` | Panning, zooming and per-path tooltips. Off by default — see below. |
 | `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Independent of `interactive`. |
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
@@ -261,6 +260,25 @@ aspect_ratio: 100%
 
 Every other endpoint still requires the real bearer token; `embed_token` unlocks only the embeddable pages (`/v1/render/map` and `/v1/render/chart`).
 
+
+### Options common to every render endpoint
+
+These mean the same thing on `/v1/render/map`, `/v1/render/chart` and `/v1/render/stat`, and on any render endpoint added later — they are declared once as a FastAPI dependency rather than copied per endpoint.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `title` | derived per endpoint | Document title. Also names the chart for a screen reader. |
+| `refresh_minutes` | `30` | How often the page reloads itself, 1–1440. |
+| `margin` | `0` | Padding round the contents, as a **percent of the frame**, 0–20. |
+| `theme` | `auto` | `auto`, `light` or `dark`. Overrides the viewer's setting. |
+| `embed_token` | — | Read-only token; a bearer token works too. |
+
+`margin` is a percentage rather than pixels because these pages embed anywhere from ~240px to ~1100px wide, and a fixed inset would swallow a small card and vanish in a large one. It is *additive*: `0` renders exactly as if the parameter were absent. Percentage padding resolves against the width on all four sides, so one number gives a visually even inset. A page that sizes its own type to the frame — the stat tile does — measures the padded box, so raising the margin shrinks the text to match rather than pushing it out.
+
+`theme` stamps `data-theme` on `<html>`. That is what the palette keys its light/dark overrides on, and what the map consults before falling back to `prefers-color-scheme`, so an override moves the basemap tiles as well as the page. Left at `auto` nothing is stamped and every page follows the viewer, which is the usual case.
+
+A second, smaller group — `date_range`, `start_date`, `end_date` — is shared by the endpoints that plot a span, which is the map and the chart. The stat tile scopes itself with `window` instead.
+
 ### Metric chart
 
 `GET /v1/render/chart` renders a metric's daily series as a line or bar chart — the companion to the map card, for embedding the same way.
@@ -270,16 +288,12 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 | `metric` | required | e.g. `weight_body_mass`. See `/v1/health/metrics`. **Repeatable** — see below. |
 | `label` | derived from `metric` | Series name in the tooltip. Repeatable, one per `metric`, in order. |
 | `unit` | the stored unit | Override the unit shown in the tooltip. Repeatable; empty (`unit=`) drops it. |
-| `date_range` / `start_date` / `end_date` | `last 90 days` | Same syntax as the health summary. |
 | `window` | `7` | Rolling-trend window in days. `0` draws the readings only. |
 | `kind` | `line` | `line` or `bar`, for every panel in the chart. See below. |
 | `stack` | unset | Names the stack a metric belongs to. Repeatable, one per `metric`. See below. |
 | `layout` | `grouped` | `grouped` or `overlay` — how stacks are arranged. |
 | `legend` | auto | Show the key. On by default only when a panel holds several series. |
 | `baseline` | unset | Pins the y-axis floor. Unset, the axis zooms to the data (but see stacks). |
-| `title` | derived from `metric` | Used as the page title. |
-| `refresh_minutes` | `30` | How often the page reloads itself. |
-| `embed_token` | — | Same token as the map page. |
 
 `metric` is repeatable, and each one becomes its own **stacked panel** with its own y-axis, sharing one x-axis and one hover crosshair. Measures of different scale never share a y-scale here: a dual axis can be slid until either series appears to lead, asserting a relationship the data does not have. Steps (~10,000 `count`) and walking distance (~6 `mi`) differ by a factor of ~1,800 — two panels state each on its own terms.
 
@@ -372,10 +386,7 @@ grid_options: {columns: full, rows: 6}
 | `label` | `Current` / `Weekly trend` | Tile label, sentence case |
 | `unit` | the stored unit | Override the unit beside the number. Empty (`unit=`) drops it. |
 | `good_direction` | `none` | `up`, `down`, or `none` — see below |
-| `margin` | `0` | Extra space around the contents, as a **percent of the tile** (0–20). |
 | `align` | `left` | `left`, `center`, or `right`. |
-| `refresh_minutes` | `30` | How often the page reloads itself |
-| `embed_token` | — | Same token as the other embedded pages |
 
 #### Today counts as zero, for totals only
 
@@ -394,8 +405,6 @@ The trade is worth knowing: if data stops arriving, a summed tile reads `0` rath
 `good_direction` colours the delta, and defaults to `none` because whether a metric rising is good is a property of your goal, not of the metric — for weight it depends entirely on what you're trying to do. The sign and an arrow carry direction regardless, so colour is never the only channel.
 
 Numbers follow the same rule as the chart: grouped and whole above 1,000 (`9,611`), one decimal below (`191.4`). On a summed metric — steps, distance, energy — `latest` is *the latest day's total*, so it reads as "today" and degrades to the last day with data if none has arrived yet.
-
-`margin` is a **percentage of the tile rather than pixels**, because the tile is rendered anywhere from ~240px to ~560px wide and a fixed pixel margin would swallow a small one and disappear in a large one. It is *additive*, so `0` renders exactly as it would with the parameter absent. Raising it shrinks the text budgets to match — the type scales down as the padding grows, instead of overflowing.
 
 ```yaml
 type: iframe
