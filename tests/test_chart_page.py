@@ -284,6 +284,24 @@ def test_the_plot_stops_above_the_x_labels_at_any_card_height() -> None:
     assert ys and max(ys) <= 320
 
 
+def test_count_readouts_carry_no_decimal_at_any_size() -> None:
+    counted = summary({"2026-07-01": 373.8, "2026-07-02": 9162.4667}, unit="count")
+    measured = summary({"2026-07-01": 5.1994, "2026-07-02": 6.02}, unit="mi")
+
+    assert [p["v"][0]["rv"] for p in embedded(render_chart_page(counted))["points"]] == [
+        "374", "9,162"
+    ]
+    # Blanking the displayed unit must not change the formatting: the decision
+    # comes from the stored unit, which is still "count".
+    blanked = render_chart_page(counted, series_units=[""])
+    assert [p["v"][0]["rv"] for p in embedded(blanked)["points"]] == ["374", "9,162"]
+
+    # A measured quantity keeps its decimal.
+    assert [p["v"][0]["rv"] for p in embedded(render_chart_page(measured))["points"]] == [
+        "5.2", "6"
+    ]
+
+
 def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
     html = render_chart_page(steps_and_distance(), series_units=["", "mi"])
 

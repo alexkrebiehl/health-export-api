@@ -210,6 +210,23 @@ def test_large_values_are_grouped_and_lose_the_decimal() -> None:
     assert "191.4" in render_latest_tile((d("2026-07-12"), 191.4), today=TODAY)
 
 
+def test_a_counted_thing_never_shows_a_decimal() -> None:
+    """"373.8 steps" appeared on the dashboard early one morning.
+
+    Grouping above 1,000 already hid the decimal on a normal day's total, so
+    this only surfaced once a partial day fell under the threshold.
+    """
+    assert "374" in render_latest_tile((d("2026-07-12"), 373.8), today=TODAY,
+                                       integral=True)
+    assert "373.8" not in render_latest_tile((d("2026-07-12"), 373.8),
+                                             today=TODAY, integral=True)
+    # And on the change tile, which shares the formatter.
+    assert "12" in render_change_tile((9600.0, 9588.4, 11.6), integral=True)
+    assert "11.6" not in render_change_tile((9600.0, 9588.4, 11.6), integral=True)
+    # A measured quantity is untouched.
+    assert "191.4" in render_latest_tile((d("2026-07-12"), 191.4), today=TODAY)
+
+
 def test_whole_numbers_drop_the_trailing_decimal() -> None:
     assert "2 lb" in render_change_tile(
         (191.0, 193.0, -2.0), unit=" lb"
@@ -316,6 +333,23 @@ def test_an_explicit_unit_overrides_the_stored_one(tmp_path: Path) -> None:
     assert "191.4" in overridden and ">kg<" in overridden
     # Omitting the param still falls back to what the store recorded.
     assert ">lb<" in stat(client).text
+
+
+def test_the_endpoint_reads_integral_from_the_stored_unit(tmp_path: Path) -> None:
+    # The decision comes from what the store recorded, not from what is shown:
+    # the steps card blanks the unit with `unit=`, and must still round.
+    client = make_client(tmp_path)
+    response = client.post("/v1/exports", headers=HEADERS, json={"data": {"metrics": [{
+        "name": "step_count", "units": "count",
+        "data": [{"date": "2026-07-12T09:00:00-04:00", "qty": 373.8}],
+    }]}})
+    assert response.status_code == 201, response.text
+
+    html = client.get("/v1/render/stat",
+                      params={"metric": "step_count", "unit": "",
+                              "embed_token": EMBED_TOKEN}).text
+
+    assert "374" in html and "373.8" not in html
 
 
 def test_margin_and_align_reach_the_endpoint(tmp_path: Path) -> None:

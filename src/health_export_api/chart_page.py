@@ -239,15 +239,30 @@ def _tick_label_px(text: str) -> float:
     return sum(_TICK_DIGIT_PX if ch.isdigit() else _TICK_THIN_PX for ch in text)
 
 
+def is_count_unit(unit: str | None) -> bool:
+    """Whether a metric's stored unit means "a number of things".
+
+    Apple Health records step_count and flights_climbed with the literal unit
+    "count". Those are tallies — a fractional part is an artefact of summing
+    partial samples, never something to show. Read from the *stored* unit, so
+    blanking the displayed one still formats the number correctly.
+    """
+    return (unit or "").strip().lower() == "count"
+
+
 # Above this, readouts are comma-grouped and lose their decimal: "9,162"
 # carries every digit that means anything on a step count. Matches the stat
 # tile's rule, so the tooltip and the tile beside it agree.
 _GROUP_ABOVE = 1000
 
 
-def _readout(value: float) -> str:
-    """The number as the tooltip states it."""
-    if abs(value) >= _GROUP_ABOVE:
+def _readout(value: float, integral: bool = False) -> str:
+    """The number as the tooltip states it.
+
+    ``integral`` drops the decimal at any magnitude — a counted thing has no
+    fractional part to report, so a step count reads 374, never "373.8".
+    """
+    if integral or abs(value) >= _GROUP_ABOVE:
         return f"{value:,.0f}"
     if abs(value) >= 1:
         text = f"{value:.1f}"
@@ -502,7 +517,10 @@ def render_chart_page(
     panels = [
         (parse_series(s.get("series") or []),
          (s.get("unit") or "") if override is None else override,
-         label)
+         label,
+         # From the stored unit, not the displayed one: `unit=` blanks the
+         # label but the number is still a tally.
+         is_count_unit(s.get("unit")))
         for s, label, override in zip(
             summaries,
             list(series_labels or []) + [""] * len(summaries),
@@ -523,8 +541,8 @@ def render_chart_page(
         )
 
     # One shared x scale across every panel.
-    first = min(points[0][0] for points, _, _ in panels)
-    last = max(points[-1][0] for points, _, _ in panels)
+    first = min(points[0][0] for points, *_ in panels)
+    last = max(points[-1][0] for points, *_ in panels)
     day_span = max((last - first).days, 1)
 
     plot_w = _W - _PAD_R
@@ -554,7 +572,7 @@ def render_chart_page(
     gutter_px = _MIN_YGUT
     by_day: list[dict[date, dict[str, Any]]] = []
 
-    for index, (points, unit, label) in enumerate(panels):
+    for index, (points, unit, label, integral) in enumerate(panels):
         top = _PAD_T + index * (panel_h + gap)
         bottom = top + panel_h
 
@@ -619,8 +637,9 @@ def render_chart_page(
             d: {
                 "ry": round(sy(v), 1),
                 "ty": (round(sy(trend_by_day[d]), 1) if d in trend_by_day else None),
-                "rv": _readout(v),
-                "tv": (_readout(trend_by_day[d]) if d in trend_by_day else None),
+                "rv": _readout(v, integral),
+                "tv": (_readout(trend_by_day[d], integral)
+                       if d in trend_by_day else None),
             }
             for d, v in points
         })
@@ -657,7 +676,7 @@ def render_chart_page(
             f'</div>'
             f'{"".join(y_labels)}<div id="tip"></div>')
 
-    every_day = sorted({d for points, _, _ in panels for d, _ in points})
+    every_day = sorted({d for points, *_ in panels for d, _ in points})
     payload = {
         "window": window,
         "series": series_meta,

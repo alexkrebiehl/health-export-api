@@ -108,3 +108,21 @@ def test_list_exports_returns_newest_first_and_honors_limit(tmp_path: Path) -> N
     exports = response.json()["exports"]
     assert [item["id"] for item in exports] == [second.json()["id"]]
     assert first.json()["id"] != second.json()["id"]
+
+
+def test_a_truncated_export_file_does_not_break_the_listing(tmp_path: Path) -> None:
+    """An upload that dies mid-write leaves a partial file on disk.
+
+    One such file — 88 bytes, from a fortnight earlier — was making every call
+    to this endpoint return 500. The other thousand exports are still the
+    useful answer.
+    """
+    client = make_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    good = client.post("/v1/exports", headers=headers, json={"data": {"steps": 10}})
+    (tmp_path / "truncated.json").write_text('{"id":"x","received_at":"2026-07-2')
+
+    response = client.get("/v1/exports", headers=headers)
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["exports"]] == [good.json()["id"]]

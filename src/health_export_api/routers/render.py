@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, Query
 from fastapi.responses import HTMLResponse
 
 from health_export_api.chart_page import (
+    is_count_unit,
     latest_reading,
     parse_series,
     render_chart_page,
@@ -176,6 +177,9 @@ def build_render_router(
         # `unit=` (empty) suppresses it: step_count's stored unit is the
         # literal string "count", which reads as noise beside the number.
         label_unit = summary.get("unit") or "" if unit is None else unit
+        # Read from the stored unit, so blanking the displayed one above still
+        # formats a tally as a whole number.
+        integral = is_count_unit(summary.get("unit"))
 
         if stat == "change":
             return HTMLResponse(
@@ -188,6 +192,7 @@ def build_render_router(
                     refresh_minutes=refresh_minutes,
                     margin=margin,
                     align=align,  # type: ignore[arg-type]
+                    integral=integral,
                 )
             )
         return HTMLResponse(
@@ -199,6 +204,7 @@ def build_render_router(
                 today=today,
                 margin=margin,
                 align=align,  # type: ignore[arg-type]
+                integral=integral,
             )
         )
 

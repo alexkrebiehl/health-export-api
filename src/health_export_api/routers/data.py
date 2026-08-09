@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ from fastapi import APIRouter, Header, Query, Request, status
 from health_export_api.provider import DataProvider
 from health_export_api.routers import domain_errors
 from health_export_api.store import Store
+
+logger = logging.getLogger(__name__)
 
 Authorize = Callable[[str | None], None]
 
@@ -31,11 +34,17 @@ def build_data_router(
     router = APIRouter()
 
     def _load_exports() -> list[dict[str, Any]]:
-        records = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in storage_dir.glob("*.json")
-        ]
-        return sorted(records, key=lambda r: r["received_at"], reverse=True)
+        # A truncated file is skipped rather than raised. An upload that dies
+        # mid-write leaves one behind, and listing every *other* export is
+        # still the useful answer — one bad file used to 500 the endpoint.
+        records = []
+        for path in storage_dir.glob("*.json"):
+            try:
+                records.append(json.loads(path.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                logger.warning("skipping unreadable export %s", path.name)
+        return sorted(records, key=lambda r: r.get("received_at") or "",
+                      reverse=True)
 
     # -------------------------------------------------------------------------
     # Ingestion — shared by all export types (health metrics, workouts, etc.)

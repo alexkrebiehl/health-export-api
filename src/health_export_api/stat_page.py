@@ -136,13 +136,17 @@ def _cqw_for(text: str, budget: float, *, cap: float) -> float:
     return _cqw_from_em(_em_width(text), budget, cap=cap)
 
 
-def _fmt(value: float) -> str:
+def _fmt(value: float, integral: bool = False) -> str:
     """One decimal, no trailing '.0', and grouped once it gets big.
 
     191.4 lb, 2 lb, 9,605 steps. A decimal on a five-digit step count is
     noise, and ungrouped digits at that length are hard to read at a glance.
+
+    ``integral`` drops the decimal at any magnitude. Counted things have no
+    fractional part to report: 374 steps, never "373.8". Grouping above 1,000
+    hid this until an early-morning step count fell below the threshold.
     """
-    if abs(value) >= _GROUP_ABOVE:
+    if integral or abs(value) >= _GROUP_ABOVE:
         return f"{value:,.0f}"
     text = f"{value:.1f}"
     return text[:-2] if text.endswith(".0") else text
@@ -157,6 +161,7 @@ def render_latest_tile(
     today: date | None = None,
     margin: float = 0.0,
     align: Align = "left",
+    integral: bool = False,
 ) -> str:
     """Tile showing the most recent reading and how fresh it is."""
     if reading is None:
@@ -172,7 +177,7 @@ def render_latest_tile(
     else:
         note = f"{age} days ago"
     note += day.strftime(" · %-d %b")
-    return _render(label, _fmt(value), unit, note, "", refresh_minutes,
+    return _render(label, _fmt(value, integral), unit, note, "", refresh_minutes,
                    margin, align)
 
 
@@ -186,6 +191,7 @@ def render_change_tile(
     refresh_minutes: int = 30,
     margin: float = 0.0,
     align: Align = "left",
+    integral: bool = False,
 ) -> str:
     """Tile showing a signed week-over-week change."""
     if change is None:
@@ -195,7 +201,7 @@ def render_change_tile(
 
     _, _, delta = change
     arrow = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
-    value = f"{arrow} {_fmt(abs(delta))}"
+    value = f"{arrow} {_fmt(abs(delta), integral)}"
 
     # Colour only when the caller has said which way is good; the arrow and
     # sign carry direction on their own either way.
