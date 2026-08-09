@@ -100,6 +100,8 @@ def build_render_router(
         start_date: str | None = Query(default=None),
         end_date: str | None = Query(default=None),
         window: int = Query(default=7, ge=0, le=365),
+        kind: str = Query(default="line", pattern="^(line|bar)$"),
+        baseline: float | None = Query(default=None),
         title: str | None = Query(default=None),
         refresh_minutes: int = Query(default=30, ge=1, le=1440),
         embed_token: str | None = Query(default=None),
@@ -111,6 +113,10 @@ def build_render_router(
         its own y-axis. Measures in different units cannot honestly share a
         y-scale, so they get a panel each rather than a second axis. ``label``
         and ``unit`` are repeatable alongside it, one per metric in order.
+
+        ``kind=bar`` suits a discrete daily total — a step count has no value
+        between Tuesday and Wednesday for a line to interpolate to. ``baseline``
+        pins the y-axis floor; unset, it zooms to the data.
         """
         authorize_embed(authorization, embed_token)
         with domain_errors():
@@ -136,6 +142,8 @@ def build_render_router(
                 series_labels=list(label or []) or names,
                 series_units=list(unit or []),
                 window=window,
+                kind=kind,
+                baseline=baseline,
                 refresh_minutes=refresh_minutes,
             )
         )

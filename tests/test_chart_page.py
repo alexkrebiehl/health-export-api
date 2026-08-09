@@ -250,6 +250,109 @@ def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Bars
+# ---------------------------------------------------------------------------
+
+
+def bars(html: str) -> list[dict[str, float]]:
+    return [
+        # The leading space matters: without it `rx=` matches as `x=`.
+        {k: float(v) for k, v in re.findall(r' (x|y|width|height)="([\d.-]+)"', tag)}
+        for tag in re.findall(r'<rect class="bar"[^/]*/>', html)
+    ]
+
+
+def steps_only() -> dict[str, Any]:
+    return summary({f"2026-07-{i:02d}": 9000.0 + i * 200 for i in range(1, 15)},
+                   unit="count")
+
+
+def test_bars_are_drawn_one_per_reading_and_never_below_the_axis() -> None:
+    html = render_chart_page(steps_only(), kind="bar", window=0)
+
+    drawn = bars(html)
+    assert len(drawn) == 14
+    assert 'class="raw"' not in html      # a bar chart is not also a line chart
+    assert 'class="trend"' not in html    # window=0: no smoothing series
+
+    # Every bar hangs from its value down to a common floor.
+    floors = {round(b["y"] + b["height"], 1) for b in drawn}
+    assert len(floors) == 1, f"bars do not share a baseline: {floors}"
+    assert all(b["height"] > 0 for b in drawn)
+
+
+def test_bars_sit_inside_the_plot_at_both_ends() -> None:
+    """A point scale would slice the first and last bars in half."""
+    drawn = bars(render_chart_page(steps_only(), kind="bar", window=0))
+
+    assert drawn[0]["x"] >= 46          # _PAD_L
+    assert drawn[-1]["x"] + drawn[-1]["width"] <= 986   # _W - _PAD_R
+    # Neighbours do not touch: the gap is what makes them read as separate.
+    assert drawn[1]["x"] > drawn[0]["x"] + drawn[0]["width"]
+
+
+def test_the_bar_axis_zooms_to_the_data_unless_a_baseline_is_given() -> None:
+    zoomed = bars(render_chart_page(steps_only(), kind="bar", window=0))
+    pinned = bars(render_chart_page(steps_only(), kind="bar", window=0, baseline=0))
+
+    # Zoomed: the shortest bar is a small fraction of the tallest, because the
+    # floor sits just under the minimum reading.
+    assert min(b["height"] for b in zoomed) / max(b["height"] for b in zoomed) < 0.2
+    # Pinned at zero: heights are proportional to the values, 9,200 to 11,800,
+    # so the shortest bar is roughly three quarters of the tallest.
+    ratio = min(b["height"] for b in pinned) / max(b["height"] for b in pinned)
+    assert ratio == pytest.approx(9200 / 11800, abs=0.02)
+
+
+def test_a_baseline_above_the_data_does_not_invert_the_scale() -> None:
+    # Guard against a divide-by-zero or an upside-down chart from a bad param.
+    drawn = bars(render_chart_page(steps_only(), kind="bar", window=0,
+                                   baseline=999_999))
+
+    assert all(b["height"] > 0 for b in drawn)
+
+
+def test_the_bar_hover_carries_the_geometry_it_needs() -> None:
+    data = embedded(render_chart_page(steps_only(), kind="bar", window=0))
+
+    assert data["kind"] == "bar"
+    assert data["bw"] > 0                       # bar width, to place the overlay
+    assert data["series"][0]["y0"] > 0          # the panel's floor
+    assert all(p["v"][0]["ry"] < data["series"][0]["y0"] for p in data["points"])
+
+
+def test_bars_use_the_overlay_marker_and_no_crosshair() -> None:
+    html = render_chart_page(steps_only(), kind="bar", window=0)
+
+    assert 'class="hbar"' in html and 'class="hdot"' not in html
+    # The highlighted bar names the day; a rule drawn through it would not add.
+    assert 'class="cross"' not in html
+
+
+def test_line_mode_is_untouched_by_the_bar_work() -> None:
+    html = render_chart_page(steps_only())
+
+    assert '<rect class="bar"' not in html
+    assert 'class="raw"' in html and 'class="hdot"' in html and 'class="cross"' in html
+    # The bar-only payload keys stay out of a line chart entirely.
+    data = embedded(html)
+    assert "kind" not in data and "bw" not in data
+    assert "y0" not in data["series"][0]
+
+
+def test_the_tooltip_clears_on_mouse_out() -> None:
+    """`hide()` named a variable the multi-panel rename had removed.
+
+    It threw a ReferenceError before reaching the tooltip, so the tooltip
+    stayed on screen after the pointer left the card.
+    """
+    html = render_chart_page(steps_only(), kind="bar", window=0)
+
+    assert "dot.style.opacity" not in html
+    assert re.search(r"function hide\(\)\{.*?tip\.style\.opacity = 0;", html, re.S)
+
+
 def test_the_panels_occupy_separate_vertical_bands() -> None:
     html = render_chart_page(steps_and_distance())
     data = embedded(html)

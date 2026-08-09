@@ -59,6 +59,17 @@ _TIP_EDGE, _TIP_GAP = 4, 10
 _PANEL_GAP = 22
 _MONTH_TICK_SPAN_DAYS = 70
 
+# A bar takes this share of its day's slot; the remainder is the gap to its
+# neighbour, which is what keeps thirty bars legible as thirty rather than a
+# solid block.
+_BAR_SLOT_FILL = 0.62
+
+# Rounded data-end, in viewBox units. Both radii are set because
+# `preserveAspectRatio="none"` scales the axes independently — a single value
+# would come out as an ellipse. These are sized to read as ~4px at a dashboard
+# card's proportions; the corner is decoration, so drifting a pixel is fine.
+_BAR_RX, _BAR_RY = 3.6, 3.2
+
 
 # ---------------------------------------------------------------------------
 # Series maths
@@ -266,6 +277,15 @@ $palette
   .trend{fill:none;stroke:var(--trend);stroke-width:3;
          stroke-linecap:round;stroke-linejoin:round}
   .cross{stroke:var(--axis);stroke-width:1;opacity:0}
+  /* Deliberately absent from the vector-effect rule above: a bar is a fill,
+     and its width and height are the encoding — they are *supposed* to scale
+     with the frame. */
+  .bar{fill:var(--trend)}
+  /* The hover marker for bars, the counterpart of .hdot for lines. A wash of
+     ink over the bar rather than a colour change, so it reads the same in both
+     themes without introducing a second hue. */
+  .hbar{position:absolute;background:var(--ink);opacity:0;pointer-events:none;
+        border-radius:3px}
   .tick{position:absolute;color:var(--muted);font-size:12px;
         font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
   .ytick{transform:translate(-100%,-50%)}
@@ -301,7 +321,8 @@ $body
   var svg = document.querySelector('svg');
   if(!svg) return;
   var cross = svg.querySelector('.cross');
-  var dots = [].slice.call(document.querySelectorAll('.hdot'));
+  var marks = [].slice.call(document.querySelectorAll('.hdot,.hbar'));
+  var bars = d.kind === 'bar';
   var tip = document.getElementById('tip'), wrap = document.getElementById('wrap');
 
   // With preserveAspectRatio="none" the viewBox maps linearly onto the box,
@@ -320,23 +341,33 @@ $body
       if (dist < bestD){ bestD = dist; best = i; }
     }
     var p = d.points[best];
-    cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
-    cross.style.opacity = 1;
+    if (cross){
+      cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x);
+      cross.style.opacity = 1;
+    }
 
-    // One dot per panel, and one tooltip listing every series for this date.
-    // A single series keeps its trend readout; with several, the bold line
-    // already shows the trend and repeating it per series would crowd the box.
+    // One marker per panel, and one tooltip listing every series for this
+    // date. A single series keeps its trend readout; with several, the bold
+    // line already shows the trend and repeating it per series would crowd
+    // the box.
     var many = d.series.length > 1;
     var html = '<span>' + p.label + '</span>', anchor = null;
     for (var s = 0; s < d.series.length; s++){
-      var v = p.v[s], meta = d.series[s], dot = dots[s];
-      if (!v){ if (dot) dot.style.opacity = 0; continue; }
+      var v = p.v[s], meta = d.series[s], mark = marks[s];
+      if (!v){ if (mark) mark.style.opacity = 0; continue; }
       var vy = v.ty !== null ? v.ty : v.ry;
       if (anchor === null) anchor = vy;
-      if (dot){
-        dot.style.left = (fracX(p.x) * 100) + '%';
-        dot.style.top = (fracY(vy) * 100) + '%';
-        dot.style.opacity = 1;
+      if (mark && bars){
+        // Cover the bar itself: its slot in x, and value-to-floor in y.
+        mark.style.left = (fracX(p.x - d.bw / 2) * 100) + '%';
+        mark.style.width = (fracX(d.bw) * 100) + '%';
+        mark.style.top = (fracY(v.ry) * 100) + '%';
+        mark.style.height = (fracY(meta.y0 - v.ry) * 100) + '%';
+        mark.style.opacity = 0.18;
+      } else if (mark){
+        mark.style.left = (fracX(p.x) * 100) + '%';
+        mark.style.top = (fracY(vy) * 100) + '%';
+        mark.style.opacity = 1;
       }
       var unit = meta.unit ? ' ' + meta.unit : '';
       html += '<br>' + (many ? '<span>' + meta.label + '</span> ' : '') + v.rv + unit;
@@ -366,7 +397,11 @@ $body
     tip.style.top = top + 'px';
     tip.style.opacity = 1;
   }
-  function hide(){ cross.style.opacity = 0; dot.style.opacity = 0; tip.style.opacity = 0; }
+  function hide(){
+    if (cross) cross.style.opacity = 0;
+    for (var i = 0; i < marks.length; i++) marks[i].style.opacity = 0;
+    tip.style.opacity = 0;
+  }
 
   wrap.addEventListener('mousemove', show);
   wrap.addEventListener('mouseleave', hide);
@@ -410,6 +445,8 @@ def render_chart_page(
     series_labels: Sequence[str] | None = None,
     series_units: Sequence[str] | None = None,
     window: int = 7,
+    kind: str = "line",
+    baseline: float | None = None,
     refresh_minutes: int = 30,
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
 ) -> str:
@@ -423,6 +460,15 @@ def render_chart_page(
 
     With a single summary the layout collapses to exactly one full-height
     panel, which is the original single-metric chart.
+
+    ``kind`` picks the mark. ``"line"`` suits a sampled level — body weight is
+    a continuous quantity you happen to read on some days. ``"bar"`` suits a
+    discrete daily total like a step count, where there is no value *between*
+    Tuesday and Wednesday to interpolate to.
+
+    ``baseline`` pins the floor of every panel's y-axis. Left unset the axis
+    zooms to the data, which reads day-to-day variation; ``baseline=0`` makes
+    bar lengths proportional to their values instead.
     """
     if isinstance(summaries, dict):
         summaries = [summaries]
@@ -459,8 +505,18 @@ def render_chart_page(
     last = max(points[-1][0] for points, _, _ in panels)
     day_span = max((last - first).days, 1)
 
+    plot_w = _W - _PAD_L - _PAD_R
+    # A band scale for bars, a point scale for lines. On a point scale the
+    # first and last readings sit exactly on the frame edges, which would slice
+    # the end bars in half; a band gives every day a slot and centres its bar
+    # in it.
+    slot_w = plot_w / (day_span + 1)
+    bar_w = slot_w * _BAR_SLOT_FILL
+
     def sx(d: date) -> float:
-        return _PAD_L + (d - first).days / day_span * (_W - _PAD_L - _PAD_R)
+        if kind == "bar":
+            return _PAD_L + ((d - first).days + 0.5) * slot_w
+        return _PAD_L + (d - first).days / day_span * plot_w
 
     count = len(panels)
     gap = _PANEL_GAP if count > 1 else 0
@@ -485,6 +541,10 @@ def render_chart_page(
         # A little headroom so the extremes are not welded to the frame.
         margin = (high - low) * 0.12 or 1.0
         low, high = low - margin, high + margin
+        if baseline is not None:
+            # Pinned floor. Guarded because a baseline at or above the data
+            # would invert the scale and divide by zero.
+            low = min(baseline, max(values) - abs(margin))
 
         def sy(v: float, top=top, bottom=bottom, low=low, high=high) -> float:
             return bottom - (v - low) / (high - low) * (bottom - top)
@@ -508,14 +568,32 @@ def render_chart_page(
         parts.append(f'<line class="axis" x1="{_PAD_L}" y1="{bottom:.1f}" '
                      f'x2="{_W - _PAD_R}" y2="{bottom:.1f}"/>')
 
-        for run in split_on_gaps(points, max_gap_days):
-            if len(run) > 1:
-                parts.append(f'<path class="raw" d="{_path(run, sx, sy)}"/>')
+        if kind == "bar":
+            # Anchored to the axis floor. A reading below an explicit baseline
+            # has no bar to draw rather than one hanging under the axis.
+            floor = sy(low)
+            for day, value in points:
+                y = sy(value)
+                height = floor - y
+                if height <= 0:
+                    continue
+                parts.append(
+                    f'<rect class="bar" x="{sx(day) - bar_w / 2:.1f}" y="{y:.1f}" '
+                    f'width="{bar_w:.1f}" height="{height:.1f}" '
+                    f'rx="{_BAR_RX}" ry="{_BAR_RY}"/>')
+        else:
+            for run in split_on_gaps(points, max_gap_days):
+                if len(run) > 1:
+                    parts.append(f'<path class="raw" d="{_path(run, sx, sy)}"/>')
         for run in split_on_gaps(trend, max_gap_days):
             if len(run) > 1:
                 parts.append(f'<path class="trend" d="{_path(run, sx, sy)}"/>')
 
-        series_meta.append({"unit": unit, "label": label})
+        meta: dict[str, Any] = {"unit": unit, "label": label}
+        if kind == "bar":
+            # Where the hover overlay's bottom edge sits, per panel.
+            meta["y0"] = round(sy(low), 1)
+        series_meta.append(meta)
         trend_by_day = dict(trend)
         by_day.append({
             d: {
@@ -537,12 +615,16 @@ def render_chart_page(
         labels.append(f'<div class="tick xtick" style="left:{x / _W * 100:.3f}%">'
                       f'{text}</div>')
 
-    parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H - _PAD_B}"/>')
+    # Bars carry the hover themselves — the highlighted bar names the day more
+    # plainly than a rule drawn through it would.
+    if kind != "bar":
+        parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H - _PAD_B}"/>')
 
-    dots = "".join(f'<div class="hdot"></div>' for _ in panels)
+    marker = "hbar" if kind == "bar" else "hdot"
+    markers = "".join(f'<div class="{marker}"></div>' for _ in panels)
     body = (f'<svg viewBox="0 0 {_W} {_H}" preserveAspectRatio="none" role="img" '
             f'aria-label="{title}">{"".join(parts)}</svg>'
-            f'{"".join(labels)}{dots}<div id="tip"></div>')
+            f'{"".join(labels)}{markers}<div id="tip"></div>')
 
     every_day = sorted({d for points, _, _ in panels for d, _ in points})
     payload = {
@@ -559,6 +641,11 @@ def render_chart_page(
             for d in every_day
         ],
     }
+    if kind == "bar":
+        # Only the bar hover needs these, and leaving them out otherwise keeps
+        # the line chart's payload exactly as it was.
+        payload["kind"] = kind
+        payload["bw"] = round(bar_w, 1)
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,

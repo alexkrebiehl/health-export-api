@@ -261,7 +261,7 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 
 ### Metric chart
 
-`GET /v1/render/chart` renders a metric's daily series as a line chart, with a bold rolling trend line over the day-to-day readings — the companion to the map card, for embedding the same way.
+`GET /v1/render/chart` renders a metric's daily series as a line or bar chart — the companion to the map card, for embedding the same way.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -269,7 +269,9 @@ Every other endpoint still requires the real bearer token; `embed_token` unlocks
 | `label` | derived from `metric` | Series name in the tooltip. Repeatable, one per `metric`, in order. |
 | `unit` | the stored unit | Override the unit shown in the tooltip. Repeatable; empty (`unit=`) drops it. |
 | `date_range` / `start_date` / `end_date` | `last 90 days` | Same syntax as the health summary. |
-| `window` | `7` | Moving-average window in days. `0` draws the daily line only. |
+| `window` | `7` | Rolling-trend window in days. `0` draws the readings only. |
+| `kind` | `line` | `line` or `bar`, for every panel in the chart. See below. |
+| `baseline` | unset | Pins the y-axis floor. Unset, the axis zooms to the data. |
 | `title` | derived from `metric` | Used as the page title. |
 | `refresh_minutes` | `30` | How often the page reloads itself. |
 | `embed_token` | — | Same token as the map page. |
@@ -286,7 +288,20 @@ The window is **calendar days**, not a count of points: readings are near-daily 
 
 The daily line **breaks when consecutive readings are more than 3 days apart**, so a hiatus shows as a gap rather than a straight line drawn through days that were never measured.
 
-The y axis is **zoomed to the data, never zero-based** — body weight moves a few pounds around ~190, and a zero baseline would flatten every real movement.
+#### Line or bar
+
+`kind` picks the mark, and the right answer follows from what the number is:
+
+- **`line`** for a *sampled level* — body weight is a continuous quantity you happen to read on some mornings, so the value between two readings is meaningful and a line may span it.
+- **`bar`** for a *discrete daily total* — a step count has no value between Tuesday and Wednesday for a line to interpolate to, and the rolling trend answers a question nobody asks of a step counter. Bars get no trend line; pass `window=0`.
+
+A bar chart uses a band x-scale, giving each day a slot and centring its bar in it, so the first and last bars sit fully inside the frame. Hovering highlights the bar rather than drawing a crosshair through it.
+
+#### The y axis
+
+**Zoomed to the data by default, for both marks.** Body weight moves a few pounds around ~190, and a zero baseline would flatten every real movement; the same is true of a step count that never goes near zero.
+
+`baseline` pins the floor when you want one. This matters more for bars than lines, so it is worth stating plainly: **with a zoomed axis, bar lengths are not proportional to their values.** A 14,844 bar can look several times a 7,600 bar when it is under twice. What a zoomed bar chart reads well is *day-to-day variation*, which is the question a 30-day step card is actually asked, and the exact figures are one hover away. Pass `baseline=0` for the proportional version.
 
 ```yaml
 type: iframe
@@ -294,7 +309,15 @@ url: https://your-host/v1/render/chart?metric=weight_body_mass&date_range=last+9
 grid_options: {columns: full, rows: 6}
 ```
 
-Two panels in one card:
+A daily-total bar card:
+
+```yaml
+type: iframe
+url: https://your-host/v1/render/chart?metric=step_count&unit=&title=Steps&kind=bar&window=0&date_range=last+30+days&embed_token=…
+grid_options: {columns: full, rows: 5}
+```
+
+Two metrics stacked in one card, a panel each:
 
 ```yaml
 type: iframe
