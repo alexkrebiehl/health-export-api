@@ -64,6 +64,132 @@ def test_daily_summary_parses_last_n_days_and_deduplicates_reexported_samples(
     }
 
 
+def steps(samples: list[tuple[str, float]]) -> dict:
+    return {"data": {"metrics": [{
+        "name": "step_count", "units": "count",
+        "data": [{"date": d, "qty": q} for d, q in samples],
+    }]}}
+
+
+def day_total(client: TestClient, day: str = "2026-07-10") -> float | None:
+    body = client.get("/v1/health/summary",
+                      headers={"Authorization": "Bearer test-token"},
+                      params={"metric": "step_count", "start_date": day,
+                              "end_date": day, "granularity": "day"}).json()
+    return next((r["value"] for r in body["series"] if r["period"] == day), None)
+
+
+def post(client: TestClient, payload: dict) -> None:
+    response = client.post("/v1/exports",
+                           headers={"Authorization": "Bearer test-token"},
+                           json=payload)
+    assert response.status_code == 201, response.text
+
+
+def test_a_full_reexport_replaces_rather_than_adds_to_the_same_day(
+    tmp_path: Path,
+) -> None:
+    """Doubling every step count on the dashboard.
+
+    The scheduled push sends a sample's real time; a manual full export sends
+    the same day bucketed to the minute, with slightly different values. Both
+    are complete for that day, so keying on (metric, timestamp, value) kept
+    both copies and the summed total came out as their sum.
+    """
+    client = make_client(tmp_path)
+    post(client, steps([("2026-07-10 08:05:28 -0400", 12.0),
+                        ("2026-07-10 08:19:28 -0400", 40.0),
+                        ("2026-07-10 09:31:28 -0400", 55.0)]))
+    assert day_total(client) == 107.0
+
+    # The same day again, re-bucketed and re-rounded, as a full export sends it.
+    post(client, steps([("2026-07-10 08:05:00 -0400", 12.4),
+                        ("2026-07-10 08:20:00 -0400", 41.1),
+                        ("2026-07-10 09:32:00 -0400", 56.2)]))
+
+    assert day_total(client) == 109.7, "the re-export must replace, not stack"
+
+
+def test_a_sample_before_the_reexported_span_survives_it(tmp_path: Path) -> None:
+    """The one place the window rule leaves a residue, pinned deliberately.
+
+    Bucketing can move a sample *forward* over a minute boundary, so the full
+    export's span starts fractionally after the reading it replaced and that
+    reading is outside it. Widening the window to catch it is the worse trade:
+    the scheduled pushes are back-to-back, so a wider window would delete the
+    tail of the previous push — data nothing re-supplies. A payload is the
+    authority for the span it covers and no more.
+
+    The residue is one bucket at each edge of a re-export, and only when the
+    producer changes granularity: 12 steps against a day's 10,620.
+    """
+    client = make_client(tmp_path)
+    post(client, steps([("2026-07-10 08:04:28 -0400", 12.0),
+                        ("2026-07-10 08:19:28 -0400", 40.0)]))
+
+    post(client, steps([("2026-07-10 08:05:00 -0400", 12.4),
+                        ("2026-07-10 08:20:00 -0400", 41.1)]))
+
+    assert day_total(client) == 12.0 + 53.5
+
+
+def test_an_exact_reexport_is_idempotent_despite_float_noise(
+    tmp_path: Path,
+) -> None:
+    # Two floats that print the same can differ in their last bits, and the
+    # UNIQUE index compares bits — which is how identical re-sends slipped
+    # through. Replacing the window does not care.
+    client = make_client(tmp_path)
+    payload = steps([("2026-07-10 12:47:00 -0400", 78.865),
+                     ("2026-07-10 12:52:00 -0400", 0.1 + 0.2)])
+    post(client, payload)
+    first = day_total(client)
+
+    post(client, payload)
+
+    assert day_total(client) == first
+
+
+def test_an_incremental_push_only_replaces_its_own_window(tmp_path: Path) -> None:
+    """The scheduled exports are deltas, not the whole day so far.
+
+    So the replacement has to be the span the payload actually covers. Wiping
+    the whole day would throw away every earlier push.
+    """
+    client = make_client(tmp_path)
+    post(client, steps([("2026-07-10 08:00:00 -0400", 100.0)]))
+    post(client, steps([("2026-07-10 12:00:00 -0400", 200.0)]))
+    post(client, steps([("2026-07-10 20:00:00 -0400", 300.0)]))
+    assert day_total(client) == 600.0
+
+    # A re-push of the middle window alone leaves the other two untouched.
+    post(client, steps([("2026-07-10 12:00:00 -0400", 250.0)]))
+
+    assert day_total(client) == 650.0
+
+
+def test_replacement_is_scoped_to_the_metric(tmp_path: Path) -> None:
+    # A payload carrying steps must not disturb another metric in that span.
+    client = make_client(tmp_path)
+    post(client, {"data": {"metrics": [
+        {"name": "step_count", "units": "count",
+         "data": [{"date": "2026-07-10 08:00:00 -0400", "qty": 100.0}]},
+        {"name": "flights_climbed", "units": "count",
+         "data": [{"date": "2026-07-10 09:00:00 -0400", "qty": 7.0}]},
+    ]}})
+    post(client, steps([("2026-07-10 07:00:00 -0400", 50.0),
+                        ("2026-07-10 23:00:00 -0400", 60.0)]))
+
+    body = client.get("/v1/health/summary",
+                      headers={"Authorization": "Bearer test-token"},
+                      params={"metric": "flights_climbed",
+                              "start_date": "2026-07-10",
+                              "end_date": "2026-07-10"}).json()
+    assert body["series"] == [
+        {"period": "2026-07-10", "sample_count": 1, "value": 7.0}
+    ]
+
+
 def test_month_summary_supports_named_date_ranges_and_averages_measurements(
     tmp_path: Path,
 ) -> None:

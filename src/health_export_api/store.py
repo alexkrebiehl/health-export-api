@@ -6,8 +6,12 @@ Architecture
   modified and can be used to rebuild the database from scratch.
 - On every ``POST /v1/exports`` the ingestion path writes the JSON to disk
   (unchanged) then calls ``Store.ingest()`` to parse and upsert samples into
-  SQLite.  ``INSERT OR IGNORE`` on unique constraints makes re-exports and
-  duplicate files idempotent.
+  SQLite.  A payload is treated as the authority for the time span it covers:
+  its metric samples *replace* whatever is stored in that window.  That is
+  what makes re-exports idempotent — row-level dedup could not be, because the
+  producer sends the same day with different timestamp granularity, different
+  values and different float noise depending on how the export was triggered.
+  Order therefore matters: replay is oldest-first, by ``received_at``.
 - On startup, ``Store.backfill()`` scans for any export files not yet recorded
   in ``processed_exports`` and ingests them.  This handles the initial
   migration from the file-only approach and edge cases where the process was
@@ -18,8 +22,9 @@ Architecture
 Schema
 ======
 metric_samples
-  One row per unique (metric, ts_iso, value, source) tuple.  Averaged and
-  summed in SQL at query time.  ``ts_iso`` stores the ISO-8601 string from
+  One row per (metric, ts_iso, value) tuple *within the windows most recently
+  ingested*.  Averaged and summed in SQL at query time.  ``ts_iso`` stores the
+  ISO-8601 string from
   _parse_timestamp so tz-offset arithmetic stays in Python where the logic
   already lives (the ts_date column carries the YYYY-MM-DD calendar date for
   range filtering without timezone conversion in SQL).
@@ -41,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from collections import defaultdict
 from datetime import UTC, date, datetime
@@ -69,6 +75,29 @@ from health_export_api.workout_normalization import (
 )
 
 log = logging.getLogger(__name__)
+
+# The stored envelope opens `{"id":…,"received_at":"…","payload":`, so the
+# timestamp is always within the first few hundred bytes.
+_RECEIVED_AT = re.compile(rb'"received_at"\s*:\s*"([^"]*)"')
+_ENVELOPE_PEEK = 512
+
+
+def _received_at_of(path: Path) -> str:
+    """When an export arrived, read from its header without parsing the file.
+
+    Falls back to the mtime, which is when it was written, so a file with an
+    unreadable header still sorts into roughly the right place rather than
+    jumping to the front.
+    """
+    try:
+        with path.open("rb") as handle:
+            match = _RECEIVED_AT.search(handle.read(_ENVELOPE_PEEK))
+        if match:
+            return match.group(1).decode("utf-8", "replace")
+    except OSError:
+        pass
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+
 
 # How many times route_coverage_geojson may coarsen the snapping tolerance
 # while trying to fit inside the caller's vertex budget.
@@ -212,11 +241,35 @@ class Store:
             con.close()
 
     def _ingest_metrics(self, con: sqlite3.Connection, payload: Any) -> None:
-        rows = []
+        """Replace each metric's covered window with this payload's samples.
+
+        Not row-level dedup. `UNIQUE (metric, ts_iso, value)` assumes that
+        re-sending a sample reproduces it byte for byte, and Health Auto Export
+        does not:
+
+        * the scheduled push carries the sample's real time (``08:18:28``)
+          while a manual full export buckets to the minute (``08:19:00``), so
+          the keys differ and both rows survive;
+        * the two also disagree on the values — one day totalled 9,902 steps
+          incrementally and 10,620 in the full export — so no timestamp-only
+          key would merge them correctly either;
+        * even an identical re-send slips through, because two floats printing
+          as 78.865 can differ in their last bits and the UNIQUE index compares
+          the bits.
+
+        Any of those triples a summed metric's totals. So identity is the
+        *window*, not the row: a payload is the authority for the span it
+        covers, and replaces whatever is stored there. That is idempotent
+        whatever the producer does to timestamps or rounding, and it is safe
+        for both export shapes — a scheduled push replaces its own 20-minute
+        delta, a full export's day file replaces that day.
+        """
+        by_metric: dict[str, list[tuple]] = {}
+        spans: dict[str, tuple[datetime, datetime]] = {}
         for metric_data in _iter_metrics(payload):
             for sample in metric_data["samples"]:
                 ts = sample.timestamp
-                rows.append((
+                by_metric.setdefault(sample.metric, []).append((
                     sample.metric,
                     ts.isoformat(),
                     ts.date().isoformat(),
@@ -225,7 +278,22 @@ class Store:
                     sample.unit,
                     sample.source,
                 ))
-        if rows:
+                low, high = spans.get(sample.metric, (ts, ts))
+                spans[sample.metric] = (min(low, ts), max(high, ts))
+
+        for metric, rows in by_metric.items():
+            low, high = spans[metric]
+            # The endpoints are chosen as instants, but SQLite compares the
+            # stored ISO text. Those agree while an offset holds, which is
+            # every day but the one the clocks go back — where the window can
+            # be an hour out. Not worth a second column to carry a sort key.
+            con.execute(
+                "DELETE FROM metric_samples "
+                "WHERE metric = ? AND ts_iso >= ? AND ts_iso <= ?",
+                (metric, low.isoformat(), high.isoformat()),
+            )
+            # OR IGNORE because a single payload can repeat a sample; the
+            # window replacement above is what makes re-ingestion idempotent.
             con.executemany(
                 "INSERT OR IGNORE INTO metric_samples "
                 "(metric, ts_iso, ts_date, ts_month, value, unit, source) "
@@ -349,8 +417,15 @@ class Store:
         finally:
             con.close()
 
-        files = sorted(exports_dir.glob("*.json"))
-        pending = [f for f in files if f.stem not in done]
+        # Oldest first. Ingestion replaces the window a payload covers, so the
+        # order is load-bearing: replayed by filename — a random token — an
+        # older export could land after a newer one and overwrite it. Read from
+        # the file's own header rather than its mtime, and cheaply: the whole
+        # archive is hundreds of megabytes and only the envelope is wanted.
+        pending = sorted(
+            (f for f in exports_dir.glob("*.json") if f.stem not in done),
+            key=_received_at_of,
+        )
         if not pending:
             return
 
