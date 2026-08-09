@@ -263,6 +263,27 @@ def test_the_plot_starts_after_the_labels_at_any_card_width() -> None:
         assert re.search(r"\.ytick\{[^}]*left:var\(--ygut\)", html)
 
 
+def test_the_plot_stops_above_the_x_labels_at_any_card_height() -> None:
+    """The same collision on the other axis: bars clipped the date labels.
+
+    A 26-unit bottom pad is 26px on a 320px-tall card but 11px on a 130px one,
+    while "11 Jul" is ~17px tall whatever the card does. So the strip the
+    labels sit in is pixels, and the plot is inset by it.
+    """
+    html = render_chart_page(steps_only(), kind="bar", window=0)
+
+    assert re.search(r"#plot\{[^}]*bottom:[\d.]+px", html)
+    # Below the plot rather than inside it — no percentage in the label's own
+    # vertical placement, which is what let the bars reach it.
+    assert re.search(r"\.xtick\{[^}]*top:calc\(100% \+ [\d.]+px\)", html)
+    assert "bottom:3px" not in html
+
+    # Nothing is drawn below the baseline any more, so nothing can be clipped
+    # by the plot's own edge.
+    ys = [float(v) for v in re.findall(r'<line class="axis"[^>]* y2="([\d.]+)"', html)]
+    assert ys and max(ys) <= 320
+
+
 def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
     html = render_chart_page(steps_and_distance(), series_units=["", "mi"])
 
@@ -395,8 +416,9 @@ def test_a_single_metric_still_renders_one_full_height_panel() -> None:
 
     assert html.count('class="raw"') == 1
     assert html.count('class="hdot"') == 1
-    # The panel spans the full plot area, so its baseline is the frame's.
-    assert 'class="axis" x1="0" y1="294.0" x2="986" y2="294.0"' in html
+    # The panel spans the full plot area, so its baseline is the frame's. Both
+    # tick gutters live outside the viewBox now, so that really is the edge.
+    assert 'class="axis" x1="0" y1="320.0" x2="986" y2="320.0"' in html
 
 
 def test_x_ticks_are_drawn_once_for_all_panels() -> None:

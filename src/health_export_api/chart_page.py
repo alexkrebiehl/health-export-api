@@ -48,15 +48,17 @@ DEFAULT_MAX_GAP_DAYS = 3
 _MIN_FIT_POINTS = 3
 
 _W, _H = 1000, 320
-_PAD_R, _PAD_T, _PAD_B = 14, 16, 26
+_PAD_R, _PAD_T = 14, 16
 
-# There is no left pad in the viewBox. The y-tick gutter is CSS pixels instead,
-# because the labels do not scale with the card but a viewBox pad does: at 46
-# units the pad is 48px on a 1040px card and 18px on a 380px one, while
-# "15,000" stays 43px wide either way — so on anything under ~1000px the plot
-# used to start left of the labels and draw straight over them. The plot is
-# inset by `--ygut` in CSS, which cannot collapse. Gap between text and plot:
-_YGUT_GAP = 8.0
+# Neither tick gutter lives in the viewBox, because a viewBox pad scales with
+# the card and the labels do not. A 46-unit left pad is 48px on a 1040px card
+# and 18px on a 380px one, while "15,000" stays 43px wide; a 26-unit bottom pad
+# is 26px on a 320px-tall card and 11px on a 130px one, while "11 Jul" stays
+# ~17px tall. Either way the plot ends up drawn over its own labels. So both
+# gutters are CSS pixels and #plot is inset by them, which cannot collapse.
+_YGUT_GAP = 8.0    # between the y labels and the plot's left edge
+_XGUT = 21.0       # the strip below the plot that the x labels sit in
+_XGUT_GAP = 3.0    # between the plot's bottom edge and the x labels
 
 # Tooltip placement, in CSS pixels: how far it stays clear of the frame edge,
 # and how far it sits from the point it describes.
@@ -280,7 +282,7 @@ $palette
      against the plot's coordinates — the SVG, the x ticks, the hover marker —
      lives in here; only the y labels and the tooltip sit outside it. */
   #plot{position:absolute;left:calc(var(--ygut) + ${ygutgap}px);right:0;
-        top:0;bottom:0}
+        top:0;bottom:${xgut}px}
   svg{position:absolute;inset:0;width:100%;height:100%;display:block}
   .grid,.axis,.raw,.trend,.cross{vector-effect:non-scaling-stroke}
   .grid{stroke:var(--grid);stroke-width:1}
@@ -305,10 +307,9 @@ $palette
      fully on screen no matter how narrow the card gets. */
   .ytick{transform:translate(-100%,-50%);left:var(--ygut)}
   :root{--ygut:${ygut}px}
-  /* Pinned to the bottom edge rather than positioned by percentage: the label
-     has a fixed height, so on a short frame a percentage puts it past the
-     bottom and it gets clipped. */
-  .xtick{transform:translate(-50%,0);bottom:3px}
+  /* Below the plot, in the strip #plot is inset by — not inside it. A label
+     with a fixed height cannot share a box whose height is a percentage. */
+  .xtick{transform:translate(-50%,0);top:calc(100% + ${xgutgap}px)}
   .xtick.last{transform:translate(-100%,0)}
   .hdot{position:absolute;width:9px;height:9px;border-radius:50%;
         background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
@@ -516,7 +517,7 @@ def render_chart_page(
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
-            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP,
+            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP, xgut=_XGUT, xgutgap=_XGUT_GAP,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -541,7 +542,7 @@ def render_chart_page(
 
     count = len(panels)
     gap = _PANEL_GAP if count > 1 else 0
-    panel_h = (_H - _PAD_T - _PAD_B - gap * (count - 1)) / count
+    panel_h = (_H - _PAD_T - gap * (count - 1)) / count
 
     parts: list[str] = []
     # Tick text lives outside the SVG. The SVG stretches to fill the frame, and
@@ -625,11 +626,12 @@ def render_chart_page(
         })
 
     # X ticks once, under the bottom panel.
+    # No tick marks: the plot now ends exactly at its baseline, so a stub drawn
+    # below it would fall outside the viewBox and be clipped. Each label sits
+    # centred under its own day, which is the reference it was providing.
     ticks = _x_ticks(first, last)
     for index, (day, text) in enumerate(ticks):
         x = sx(day)
-        parts.append(f'<line class="axis" x1="{x:.1f}" y1="{_H - _PAD_B}" '
-                     f'x2="{x:.1f}" y2="{_H - _PAD_B + 4}"/>')
         # Centred on its mark, except the last one — half of a centred label
         # hangs past the right edge, which on a narrow card is enough to clip
         # it. That one hangs to the left of its mark instead.
@@ -642,7 +644,7 @@ def render_chart_page(
     # Bars carry the hover themselves — the highlighted bar names the day more
     # plainly than a rule drawn through it would.
     if kind != "bar":
-        parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H - _PAD_B}"/>')
+        parts.append(f'<line class="cross" y1="{_PAD_T}" y2="{_H}"/>')
 
     marker = "hbar" if kind == "bar" else "hdot"
     markers = "".join(f'<div class="{marker}"></div>' for _ in panels)
@@ -679,6 +681,7 @@ def render_chart_page(
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
         vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1), ygutgap=_YGUT_GAP,
+        xgut=_XGUT, xgutgap=_XGUT_GAP,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )
