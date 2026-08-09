@@ -48,7 +48,15 @@ DEFAULT_MAX_GAP_DAYS = 3
 _MIN_FIT_POINTS = 3
 
 _W, _H = 1000, 320
-_PAD_L, _PAD_R, _PAD_T, _PAD_B = 46, 14, 16, 26
+_PAD_R, _PAD_T, _PAD_B = 14, 16, 26
+
+# There is no left pad in the viewBox. The y-tick gutter is CSS pixels instead,
+# because the labels do not scale with the card but a viewBox pad does: at 46
+# units the pad is 48px on a 1040px card and 18px on a 380px one, while
+# "15,000" stays 43px wide either way — so on anything under ~1000px the plot
+# used to start left of the labels and draw straight over them. The plot is
+# inset by `--ygut` in CSS, which cannot collapse. Gap between text and plot:
+_YGUT_GAP = 8.0
 
 # Tooltip placement, in CSS pixels: how far it stays clear of the frame edge,
 # and how far it sits from the point it describes.
@@ -268,6 +276,11 @@ $palette
      live in HTML positioned by percentage rather than in the SVG, so the type
      is never distorted either. */
   #wrap{position:relative;width:100%;height:100%}
+  /* The plot, inset from the left by the tick gutter. Everything positioned
+     against the plot's coordinates — the SVG, the x ticks, the hover marker —
+     lives in here; only the y labels and the tooltip sit outside it. */
+  #plot{position:absolute;left:calc(var(--ygut) + ${ygutgap}px);right:0;
+        top:0;bottom:0}
   svg{position:absolute;inset:0;width:100%;height:100%;display:block}
   .grid,.axis,.raw,.trend,.cross{vector-effect:non-scaling-stroke}
   .grid{stroke:var(--grid);stroke-width:1}
@@ -288,12 +301,15 @@ $palette
         border-radius:3px}
   .tick{position:absolute;color:var(--muted);font-size:12px;
         font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
-  .ytick{transform:translate(-100%,-50%)}
+  /* Right-aligned against the plot's left edge, so the widest label is always
+     fully on screen no matter how narrow the card gets. */
+  .ytick{transform:translate(-100%,-50%);left:var(--ygut)}
   :root{--ygut:${ygut}px}
   /* Pinned to the bottom edge rather than positioned by percentage: the label
      has a fixed height, so on a short frame a percentage puts it past the
      bottom and it gets clipped. */
   .xtick{transform:translate(-50%,0);bottom:3px}
+  .xtick.last{transform:translate(-100%,0)}
   .hdot{position:absolute;width:9px;height:9px;border-radius:50%;
         background:var(--trend);border:2px solid var(--surface);box-sizing:border-box;
         transform:translate(-50%,-50%);opacity:0;pointer-events:none}
@@ -324,6 +340,7 @@ $body
   var marks = [].slice.call(document.querySelectorAll('.hdot,.hbar'));
   var bars = d.kind === 'bar';
   var tip = document.getElementById('tip'), wrap = document.getElementById('wrap');
+  var plot = document.getElementById('plot');
 
   // With preserveAspectRatio="none" the viewBox maps linearly onto the box,
   // so the conversion is a plain ratio in each axis — no CTM needed, and the
@@ -385,8 +402,12 @@ $body
     // which used to grow the page and raise a scrollbar. Measured after the
     // content is set — opacity does not affect layout, so this is correct
     // even on the first hover.
-    var frame = wrap.getBoundingClientRect();
-    var px = fracX(p.x) * frame.width, py = fracY(y) * frame.height;
+    // The tooltip is a child of #wrap, not #plot, so it can use the gutter's
+    // width too — on a narrow card that is the difference between fitting and
+    // being clamped. Its coordinates therefore need the plot's own offset.
+    var frame = wrap.getBoundingClientRect(), area = plot.getBoundingClientRect();
+    var px = area.left - frame.left + fracX(p.x) * area.width;
+    var py = fracY(y) * area.height;
     var tw = tip.offsetWidth, th = tip.offsetHeight;
 
     var left = Math.min(Math.max(px - tw / 2, $edge), frame.width - tw - $edge);
@@ -495,7 +516,7 @@ def render_chart_page(
         return _TEMPLATE.substitute(
             title=title, body=body,
             palette=PALETTE_CSS, font=FONT_STACK, vw=_W, vh=_H,
-            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT,
+            edge=_TIP_EDGE, gap=_TIP_GAP, ygut=_MIN_YGUT, ygutgap=_YGUT_GAP,
             data=json.dumps(payload).replace("<", "\\u003c"),
             refresh_ms=refresh_minutes * 60_000,
         )
@@ -505,7 +526,7 @@ def render_chart_page(
     last = max(points[-1][0] for points, _, _ in panels)
     day_span = max((last - first).days, 1)
 
-    plot_w = _W - _PAD_L - _PAD_R
+    plot_w = _W - _PAD_R
     # A band scale for bars, a point scale for lines. On a point scale the
     # first and last readings sit exactly on the frame edges, which would slice
     # the end bars in half; a band gives every day a slot and centres its bar
@@ -515,8 +536,8 @@ def render_chart_page(
 
     def sx(d: date) -> float:
         if kind == "bar":
-            return _PAD_L + ((d - first).days + 0.5) * slot_w
-        return _PAD_L + (d - first).days / day_span * plot_w
+            return ((d - first).days + 0.5) * slot_w
+        return (d - first).days / day_span * plot_w
 
     count = len(panels)
     gap = _PANEL_GAP if count > 1 else 0
@@ -526,7 +547,8 @@ def render_chart_page(
     # Tick text lives outside the SVG. The SVG stretches to fill the frame, and
     # anything inside it stretches too — type included — so the labels are HTML
     # placed at the same coordinates expressed as percentages.
-    labels: list[str] = []
+    x_labels: list[str] = []
+    y_labels: list[str] = []
     series_meta: list[dict[str, Any]] = []
     gutter_px = _MIN_YGUT
     by_day: list[dict[date, dict[str, Any]]] = []
@@ -552,21 +574,18 @@ def render_chart_page(
         for tick in _nice_ticks(low, high):
             y = sy(tick)
             text = f"{tick:,g}"
-            parts.append(f'<line class="grid" x1="{_PAD_L}" y1="{y:.1f}" '
-                         f'x2="{_W - _PAD_R}" y2="{y:.1f}"/>')
-            # The gutter is a percentage of width, so on a narrow frame it
-            # collapses and a right-aligned label runs off the left edge. The
-            # `--ygut` floor below keeps the widest label on screen at any
-            # width — it is measured from the labels, not fixed, because
-            # "15,000" needs half again the room "190" does.
+            parts.append(f'<line class="grid" x1="0" y1="{y:.1f}" '
+                         f'x2="{plot_w}" y2="{y:.1f}"/>')
+            # `--ygut` is measured from the labels rather than fixed, because
+            # "15,000" needs half again the room "190" does, and it sets the
+            # plot's inset too — that is what keeps the two from colliding.
             gutter_px = max(gutter_px, _tick_label_px(text) + 2)
-            labels.append(
-                f'<div class="tick ytick" '
-                f'style="left:max(var(--ygut),{(_PAD_L - 8) / _W * 100:.3f}%);'
-                f'top:{y / _H * 100:.3f}%">{text}</div>')
+            y_labels.append(
+                f'<div class="tick ytick" style="top:{y / _H * 100:.3f}%">'
+                f'{text}</div>')
 
-        parts.append(f'<line class="axis" x1="{_PAD_L}" y1="{bottom:.1f}" '
-                     f'x2="{_W - _PAD_R}" y2="{bottom:.1f}"/>')
+        parts.append(f'<line class="axis" x1="0" y1="{bottom:.1f}" '
+                     f'x2="{plot_w}" y2="{bottom:.1f}"/>')
 
         if kind == "bar":
             # Anchored to the axis floor. A reading below an explicit baseline
@@ -606,14 +625,19 @@ def render_chart_page(
         })
 
     # X ticks once, under the bottom panel.
-    for day, text in _x_ticks(first, last):
+    ticks = _x_ticks(first, last)
+    for index, (day, text) in enumerate(ticks):
         x = sx(day)
         parts.append(f'<line class="axis" x1="{x:.1f}" y1="{_H - _PAD_B}" '
                      f'x2="{x:.1f}" y2="{_H - _PAD_B + 4}"/>')
+        # Centred on its mark, except the last one — half of a centred label
+        # hangs past the right edge, which on a narrow card is enough to clip
+        # it. That one hangs to the left of its mark instead.
+        edge = " last" if index == len(ticks) - 1 and index else ""
         # Only the horizontal position comes from the plot; the CSS pins these
         # to the bottom edge.
-        labels.append(f'<div class="tick xtick" style="left:{x / _W * 100:.3f}%">'
-                      f'{text}</div>')
+        x_labels.append(f'<div class="tick xtick{edge}" '
+                        f'style="left:{x / _W * 100:.3f}%">{text}</div>')
 
     # Bars carry the hover themselves — the highlighted bar names the day more
     # plainly than a rule drawn through it would.
@@ -622,9 +646,14 @@ def render_chart_page(
 
     marker = "hbar" if kind == "bar" else "hdot"
     markers = "".join(f'<div class="{marker}"></div>' for _ in panels)
-    body = (f'<svg viewBox="0 0 {_W} {_H}" preserveAspectRatio="none" role="img" '
+    # Anything measured in plot coordinates goes inside #plot; the y labels sit
+    # outside it, in the gutter that #plot is inset by.
+    body = (f'<div id="plot">'
+            f'<svg viewBox="0 0 {_W} {_H}" preserveAspectRatio="none" role="img" '
             f'aria-label="{title}">{"".join(parts)}</svg>'
-            f'{"".join(labels)}{markers}<div id="tip"></div>')
+            f'{"".join(x_labels)}{markers}'
+            f'</div>'
+            f'{"".join(y_labels)}<div id="tip"></div>')
 
     every_day = sorted({d for points, _, _ in panels for d, _ in points})
     payload = {
@@ -649,7 +678,7 @@ def render_chart_page(
 
     return _TEMPLATE.substitute(
         title=title, body=body, palette=PALETTE_CSS, font=FONT_STACK,
-        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1),
+        vw=_W, vh=_H, edge=_TIP_EDGE, gap=_TIP_GAP, ygut=round(gutter_px, 1), ygutgap=_YGUT_GAP,
         data=json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c"),
         refresh_ms=refresh_minutes * 60_000,
     )

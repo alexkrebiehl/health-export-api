@@ -155,8 +155,10 @@ def test_the_plot_fills_the_frame_without_distorting_ink() -> None:
     assert "vector-effect:non-scaling-stroke" in html
     # Tick text sits in HTML, positioned by percentage, so it is never scaled.
     assert "<text" not in html
-    assert re.search(r'class="tick ytick" style="left:max\(var\(--ygut\),[\d.]+%\);'
-                     r'top:[\d.]+%"', html)
+    assert re.search(r'class="tick ytick" style="top:[\d.]+%"', html)
+    # The plot is inset by the gutter in CSS pixels, not by a viewBox pad — a
+    # percentage pad collapses under the labels on a narrow card.
+    assert re.search(r"#plot\{[^}]*left:calc\(var\(--ygut\) \+ [\d.]+px\)", html)
 
 
 def steps_and_distance() -> list[dict[str, Any]]:
@@ -240,6 +242,27 @@ def test_the_y_gutter_grows_to_fit_the_widest_tick_label() -> None:
     assert ygut(weight) >= 34.0
 
 
+def test_the_plot_starts_after_the_labels_at_any_card_width() -> None:
+    """Bars used to be drawn straight over the y-axis labels on a small card.
+
+    The gutter is CSS pixels and the plot's inset is the *same* value, so the
+    two cannot cross. When the left pad lived in the viewBox it scaled with the
+    card — 48px wide at 1040px, 18px at 380px — while "15,000" stayed 43px, so
+    everything under about 1000px collided.
+    """
+    for html in (render_chart_page(steps_only(), kind="bar", window=0),
+                 render_chart_page(summary({"2026-07-01": 190.0,
+                                            "2026-07-02": 191.0,
+                                            "2026-07-03": 192.0}))):
+        # Nothing in the drawing sits left of the plot's own origin...
+        assert ' x1="0"' in html or ' x="0' in html
+        assert not re.search(r'\sx1?="-', html)
+        # ...and the plot begins one gutter in, in pixels, with the labels
+        # right-aligned against exactly that edge.
+        assert re.search(r"#plot\{[^}]*left:calc\(var\(--ygut\) \+ [\d.]+px\)", html)
+        assert re.search(r"\.ytick\{[^}]*left:var\(--ygut\)", html)
+
+
 def test_a_units_override_can_blank_a_noisy_stored_unit() -> None:
     html = render_chart_page(steps_and_distance(), series_units=["", "mi"])
 
@@ -286,7 +309,7 @@ def test_bars_sit_inside_the_plot_at_both_ends() -> None:
     """A point scale would slice the first and last bars in half."""
     drawn = bars(render_chart_page(steps_only(), kind="bar", window=0))
 
-    assert drawn[0]["x"] >= 46          # _PAD_L
+    assert drawn[0]["x"] >= 0
     assert drawn[-1]["x"] + drawn[-1]["width"] <= 986   # _W - _PAD_R
     # Neighbours do not touch: the gap is what makes them read as separate.
     assert drawn[1]["x"] > drawn[0]["x"] + drawn[0]["width"]
@@ -373,7 +396,7 @@ def test_a_single_metric_still_renders_one_full_height_panel() -> None:
     assert html.count('class="raw"') == 1
     assert html.count('class="hdot"') == 1
     # The panel spans the full plot area, so its baseline is the frame's.
-    assert 'class="axis" x1="46" y1="294.0" x2="986" y2="294.0"' in html
+    assert 'class="axis" x1="0" y1="294.0" x2="986" y2="294.0"' in html
 
 
 def test_x_ticks_are_drawn_once_for_all_panels() -> None:
