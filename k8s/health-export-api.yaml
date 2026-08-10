@@ -1,3 +1,10 @@
+# A self-contained manifest for running this service on Kubernetes.
+#
+# This is a reference, not the delivery mechanism: the cluster this was built
+# for is reconciled by Flux from a separate GitOps repository, which holds the
+# same resources plus an Ingress and an ExternalSecret. See docs/deployment.md.
+# The settings here mirror what that repository actually applies, including the
+# ones that were arrived at the hard way and are commented as such.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -6,37 +13,64 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
+      # Raw exports are never deleted and the SQLite store is rebuilt from
+      # them, so this holds both. ~1,000 exports plus the database ran to
+      # roughly 900 MB.
       storage: 2Gi
+  # storageClassName: set to your cluster's class
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: health-export-api
+  labels:
+    app: health-export-api
 spec:
   replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: the data volume is ReadWriteOnce and SQLite
+    # expects a single writer, so a new pod must not start before the old one
+    # has released it.
+    type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: health-export-api
+      app: health-export-api
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: health-export-api
+        app: health-export-api
     spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+        # Only chown the volume when its root does not already match, which
+        # keeps restarts fast once the export archive is large.
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: api
           image: ghcr.io/REPLACE_ME/health-export-api:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
-              name: http
+            - name: http
+              containerPort: 8000
+              protocol: TCP
           env:
+            # The API resolves "today" from the container clock, so under UTC a
+            # reading taken this evening looks like yesterday's from 20:00
+            # Eastern onwards. Explicit UTC timestamps (an export's
+            # received_at) are unaffected — those never use local time.
+            - name: TZ
+              value: America/New_York
             - name: HEALTH_EXPORT_STORAGE_DIR
               value: /data/exports
+            # Seconds to cache rendered results. Surfaced here so it can be
+            # tuned without rebuilding the image; 0 disables caching. Ingesting
+            # an export clears the cache regardless, so this only bounds how
+            # long an unchanged answer is reused.
+            - name: HEALTH_EXPORT_CACHE_TTL
+              value: "300"
             - name: HEALTH_EXPORT_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -49,17 +83,29 @@ spec:
             httpGet:
               path: /healthz
               port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
-            limits:
-              cpu: 500m
               memory: 256Mi
+            limits:
+              # No CPU limit on purpose. Route-coverage rendering is a burst of
+              # pure-Python work, and a 500m quota throttled 2538 of 3091
+              # scheduling periods (82%), stalling back-to-back requests.
+              # Memory stays capped — that limit protects the node from a
+              # runaway; a CPU limit only ever slows this pod down.
+              memory: 768Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -75,9 +121,11 @@ kind: Service
 metadata:
   name: health-export-api
 spec:
+  type: ClusterIP
   selector:
-    app.kubernetes.io/name: health-export-api
+    app: health-export-api
   ports:
     - name: http
+      protocol: TCP
       port: 80
       targetPort: http
