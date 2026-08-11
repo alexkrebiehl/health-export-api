@@ -53,3 +53,9 @@ HEALTH_EXPORT_API_TOKEN=$(openssl rand -hex 32) \
 ```
 
 Then point a Health Auto Export automation at `POST /v1/exports` — see [docs/health-auto-export.md](docs/health-auto-export.md).
+
+To see the dashboard cards without any real data:
+
+```bash
+uv run python scripts/demo_data.py --serve
+```

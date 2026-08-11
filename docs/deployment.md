@@ -96,6 +96,17 @@ docker build --tag health-export-api:test .
 
 The image supports a read-only root filesystem; only `/data` needs persistent writable storage.
 
+## A demo instance
+
+`scripts/demo_data.py` seeds an instance with invented data — 90 days of metrics and GPS workouts over Chicago's street grid — and serves it, so the render endpoints can be worked on without a real export archive:
+
+```bash
+uv run python scripts/demo_data.py --serve   # seed and serve on :8000
+uv run python scripts/demo_data.py --urls    # print the card URLs
+```
+
+Everything is generated from a fixed seed against a fixed "today", so the cards render identically on every run — which is what keeps the screenshots in [rendering.md](rendering.md) from going stale. The store is recreated each run under the gitignored `storage/`.
+
 ---
 
 [← Documentation index](../README.md#documentation)
