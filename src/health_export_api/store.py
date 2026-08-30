@@ -51,7 +51,7 @@ import sqlite3
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from health_export_api.geo import (
     Cell,
@@ -70,8 +70,11 @@ from health_export_api.normalization import (
 )
 from health_export_api.workout_normalization import (
     HEVY_WORKOUT_TYPE,
+    HeartRateSample,
+    _iter_heart_rate_samples,
     _iter_workouts,
     _iter_route_points,
+    interpolate_heart_rate,
 )
 
 log = logging.getLogger(__name__)
@@ -80,6 +83,21 @@ log = logging.getLogger(__name__)
 # timestamp is always within the first few hundred bytes.
 _RECEIVED_AT = re.compile(rb'"received_at"\s*:\s*"([^"]*)"')
 _ENVELOPE_PEEK = 512
+
+
+def _epoch(value: str) -> float | None:
+    """Epoch seconds for a stored ISO timestamp, or None if unparseable.
+
+    A stamp without an offset is read as UTC: mixing naive and aware values
+    would silently shift one of them by the local offset.
+    """
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.timestamp()
 
 
 def _received_at_of(path: Path) -> str:
@@ -110,6 +128,52 @@ _MIN_CELL_BUDGET = 50_000
 # Tolerance multiplier when a pass runs out of cells. Cells along a route scale
 # with 1/tolerance, so this cuts the next pass to roughly a quarter.
 _OVERFLOW_GROWTH = 4.0
+
+
+def _write_heart_rate(
+    con: sqlite3.Connection, samples: Iterable[HeartRateSample]
+) -> None:
+    """Replace each workout's heart-rate series with the one just parsed.
+
+    Delete-then-insert per workout rather than INSERT OR IGNORE, because a
+    re-send of the same workout carries the same data under different
+    timestamps and values. The rest of ingest already replaces the window a
+    payload covers; this keeps to that contract instead of accumulating both
+    versions of a series that would then average against each other.
+    """
+    by_workout: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
+    for sample in samples:
+        by_workout[sample.workout_id].append(
+            (sample.workout_id, sample.sampled_at.isoformat(), sample.bpm)
+        )
+    if not by_workout:
+        return
+
+    # A payload can carry a heart-rate series for a workout that produced no
+    # session row — one missing a name or an unparseable start. The foreign key
+    # would reject those, and one such workout would otherwise take down every
+    # other series in the same file, so drop them here instead.
+    known = {
+        row[0]
+        for row in con.execute(
+            "SELECT id FROM workout_sessions WHERE id IN "
+            f"({', '.join('?' * len(by_workout))})",
+            list(by_workout),
+        )
+    }
+    by_workout = {k: v for k, v in by_workout.items() if k in known}
+    if not by_workout:
+        return
+    con.executemany(
+        "DELETE FROM workout_heart_rate WHERE workout_id = ?",
+        [(wid,) for wid in by_workout],
+    )
+    con.executemany(
+        "INSERT OR REPLACE INTO workout_heart_rate "
+        "(workout_id, sampled_iso, bpm) VALUES (?, ?, ?)",
+        [row for rows in by_workout.values() for row in rows],
+    )
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -173,6 +237,19 @@ CREATE TABLE IF NOT EXISTS workout_routes (
 CREATE INDEX IF NOT EXISTS idx_wr_workout ON workout_routes (workout_id);
 -- Supports the bounding-box scan behind the route-coverage GeoJSON endpoint.
 CREATE INDEX IF NOT EXISTS idx_wr_latlon ON workout_routes (latitude, longitude);
+
+-- Heart rate at the export's own sampling cadence — a bucket a minute in
+-- practice, against roughly a route point a second. Kept as samples rather
+-- than interpolated onto workout_routes so the interpolation stays a query
+-- concern, changeable without re-ingesting, and so this table can be added
+-- without altering a 283k-row table on a schema that has no migration step.
+CREATE TABLE IF NOT EXISTS workout_heart_rate (
+    workout_id  TEXT NOT NULL,
+    sampled_iso TEXT NOT NULL,      -- ISO-8601, offset-bearing
+    bpm         REAL NOT NULL,
+    PRIMARY KEY (workout_id, sampled_iso),
+    FOREIGN KEY (workout_id) REFERENCES workout_sessions(id) ON DELETE CASCADE
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS processed_exports (
     export_id   TEXT PRIMARY KEY,
@@ -398,6 +475,8 @@ class Store:
                 route_rows,
             )
 
+        _write_heart_rate(con, _iter_heart_rate_samples([fake_record]))
+
     # ------------------------------------------------------------------
     # Startup backfill
     # ------------------------------------------------------------------
@@ -444,6 +523,55 @@ class Store:
             except Exception as exc:
                 log.warning("Failed to ingest %s: %s", export_id, exc)
         log.info("Backfill complete.")
+
+    def backfill_heart_rate(self, exports_dir: Path) -> None:
+        """Populate ``workout_heart_rate`` from exports already ingested.
+
+        ``backfill`` skips anything in ``processed_exports``, so it will not
+        replay history for a table added later — and route rows are written
+        with INSERT OR IGNORE, so a forced replay would not fill one either.
+        Hence a pass of its own.
+
+        It reads only ``heartRateData`` and writes only this table, leaving
+        sessions, routes and metrics untouched, so a partial run costs nothing
+        to repeat. Skips entirely once the table has rows, which makes it a
+        one-off on an existing database and a no-op on every later start.
+        """
+        con = self._connect()
+        try:
+            already = con.execute(
+                "SELECT 1 FROM workout_heart_rate LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+        if already:
+            return
+
+        # Oldest first, for the same reason `backfill` is: a workout's series
+        # is replaced wholesale, so the newest re-send has to land last.
+        paths = sorted(exports_dir.glob("*.json"), key=_received_at_of)
+        if not paths:
+            return
+
+        log.info("Backfilling heart rate from %d export file(s)…", len(paths))
+        written = 0
+        for path in paths:
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.warning("Skipping unreadable export %s: %s", path.name, exc)
+                continue
+            con = self._connect()
+            try:
+                samples = list(_iter_heart_rate_samples([record]))
+                _write_heart_rate(con, samples)
+                con.commit()
+                written += len(samples)
+            except Exception as exc:
+                log.warning("Failed heart-rate backfill for %s: %s", path.name, exc)
+            finally:
+                con.close()
+        log.info("Heart-rate backfill complete: %d sample(s).", written)
 
     # ------------------------------------------------------------------
     # Query — health metrics
@@ -827,6 +955,7 @@ class Store:
         max_vertices: int = 50_000,
         tolerance_m: float = 15.0,
         min_count: int = 1,
+        include_heart_rate: bool = False,
     ) -> dict[str, Any]:
         """Union every route inside a box into a GeoJSON coverage map.
 
@@ -838,6 +967,9 @@ class Store:
             max_vertices: Hard ceiling on coordinates in the result.
             tolerance_m: Starting grid size; paths closer than this merge.
             min_count: Drop paths used fewer than this many times.
+            include_heart_rate: Attach a per-vertex mean bpm to each feature.
+                Off by default: it is a per-coordinate array, so it is not
+                free, and only the intensity rendering reads it.
 
         Returns:
             A GeoJSON FeatureCollection of LineStrings, each carrying the
@@ -895,7 +1027,10 @@ class Store:
 
             for _ in range(_MAX_TOLERANCE_PASSES):
                 aggregator = SegmentAggregator(
-                    center_lat=lat, tolerance_m=tolerance, max_cells=cell_budget
+                    center_lat=lat,
+                    tolerance_m=tolerance,
+                    max_cells=cell_budget,
+                    collect_heart_rate=include_heart_rate,
                 )
                 try:
                     self._feed_aggregator(con, sessions, bbox, aggregator)
@@ -964,10 +1099,12 @@ class Store:
         pinned to MEMORY, which would put a whole city's routes on the heap.
         Here only one workout is ever resident.
         """
+        want_hr = aggregator.collects_heart_rate
         for session in sessions:
             rows = con.execute(
-                """
+                f"""
                 SELECT point_index, latitude, longitude
+                       {", timestamp" if want_hr else ""}
                 FROM workout_routes
                 WHERE workout_id = ?
                   AND latitude BETWEEN ? AND ?
@@ -976,11 +1113,37 @@ class Store:
                 """,
                 (session["id"], *bbox),
             ).fetchall()
+            heart_rate = (
+                self._heart_rate_for(con, session["id"], rows) if want_hr else None
+            )
             aggregator.add_workout(
                 [(r["point_index"], r["latitude"], r["longitude"]) for r in rows],
                 workout_type=session["name"],
                 started_date=session["started_date"],
+                heart_rate=heart_rate,
             )
+
+    def _heart_rate_for(
+        self, con: sqlite3.Connection, workout_id: str, rows: list[sqlite3.Row]
+    ) -> list[float | None]:
+        """Interpolate this workout's heart-rate series onto its route points.
+
+        Both sides are converted to epoch seconds first. The stored timestamps
+        carry their UTC offset, so comparing the ISO strings would be unsound
+        across a daylight-saving boundary — the same trap the session date
+        filter avoids in ``route_coverage_geojson``.
+        """
+        samples = [
+            (_epoch(r["sampled_iso"]), r["bpm"])
+            for r in con.execute(
+                "SELECT sampled_iso, bpm FROM workout_heart_rate "
+                "WHERE workout_id = ? ORDER BY sampled_iso",
+                (workout_id,),
+            )
+        ]
+        samples = sorted((at, bpm) for at, bpm in samples if at is not None)
+        point_epochs = [_epoch(r["timestamp"]) or 0.0 for r in rows]
+        return interpolate_heart_rate(point_epochs, samples)
 
 
 # ------------------------------------------------------------------

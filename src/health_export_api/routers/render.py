@@ -75,6 +75,9 @@ def build_render_router(
         interactive: bool = Query(default=False),
         weight: float | None = Query(default=None, gt=0, le=20),
         basemap: str = Query(default="street", pattern="^(street|topo)$"),
+        color_by: str = Query(
+            default="frequency", pattern="^(frequency|heart_rate)$"
+        ),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
         page: PageOptions = PageDep,
@@ -98,6 +101,7 @@ def build_render_router(
                 max_vertices=max_vertices,
                 tolerance_m=tolerance_m,
                 min_count=min_count,
+                include_heart_rate=color_by == "heart_rate",
             )
         return HTMLResponse(
             render_map_page(
@@ -108,6 +112,7 @@ def build_render_router(
                 interactive=interactive,
                 weight=weight,
                 basemap=basemap,
+                color_by=color_by,
             )
         )
 

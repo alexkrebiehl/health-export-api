@@ -68,6 +68,7 @@ def create_app(
     db_path = storage_dir / "health_export.db"
     store = Store(db_path)
     store.backfill(storage_dir)
+    store.backfill_heart_rate(storage_dir)
 
     app = FastAPI(title="Health Export API", version="0.10.0")
 
