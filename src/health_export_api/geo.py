@@ -22,7 +22,15 @@ Key design decisions:
 * **Chaining.** Emitting every segment as its own two-point LineString would
   double the vertex count and produce thousands of features. Segments are
   dissolved back into long polylines, broken only at junctions and where the
-  rendered properties (traversal count, workout types) change.
+  rendered properties (traversal count, workout types) change. Continuous
+  values deliberately stay out of that break rule — see below.
+
+* **Intensity is per cell, not per segment.** Heart rate is accumulated against
+  the *vertices* and emitted as one value per coordinate. Folding it into the
+  chain-break rule would split a chain at nearly every interior vertex, roughly
+  doubling the vertex count and pushing the caller into coarsening the grid.
+  Per-vertex values also happen to be exactly what shading a line along its
+  length requires.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from math import cos, radians
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 # Metres per degree of latitude. Longitude is this scaled by cos(latitude).
 # A sphere is accurate enough: over a city-sized box the error is centimetres.
@@ -139,6 +147,7 @@ class SegmentAggregator:
         center_lat: float,
         tolerance_m: float,
         max_cells: int | None = None,
+        collect_heart_rate: bool = False,
     ) -> None:
         self._d_lat, self._d_lon = cell_size_degrees(
             center_lat=center_lat, tolerance_m=tolerance_m
@@ -148,8 +157,20 @@ class SegmentAggregator:
         # coordinate is the running mean, so a cell shared between features
         # always resolves to the identical coordinate and the lines join up.
         self._cells: dict[Cell, list[float]] = {}
+        # Intensity is accumulated per *cell*, not per segment, and deliberately
+        # so. Folding a continuous value into `_signature` would break a chain
+        # at nearly every interior vertex; per-cell means leave chaining exactly
+        # as it was and give a feature one value per vertex, which is what a
+        # gradient along the line needs anyway.
+        self._collect_heart_rate = collect_heart_rate
+        self._cell_bpm: dict[Cell, list[float]] = {}  # cell -> [sum, count]
         self._segments: dict[Edge, _SegmentStat] = {}
         self.workout_count = 0
+
+    @property
+    def collects_heart_rate(self) -> bool:
+        """Whether this aggregator was asked to accumulate heart rate."""
+        return self._collect_heart_rate
 
     def add_workout(
         self,
@@ -157,6 +178,7 @@ class SegmentAggregator:
         *,
         workout_type: str,
         started_date: str,
+        heart_rate: Sequence[float | None] | None = None,
     ) -> None:
         """Add one workout's in-box points as (point_index, lat, lon), in order.
 
@@ -167,13 +189,22 @@ class SegmentAggregator:
         line being drawn across the box. Genuine holes also occur where
         ingestion skipped a malformed point, and breaking there is equally
         correct.
+
+        ``heart_rate`` is a parallel sequence, one entry per point, already
+        interpolated onto the route. Kept alongside rather than folded into the
+        tuples so existing callers — and the aggregation tests — are unchanged.
         """
         edges: set[Edge] = set()
         previous_index: int | None = None
         previous_cell: Cell | None = None
 
-        for index, lat, lon in points:
-            cell = self._record(lat, lon)
+        for position, (index, lat, lon) in enumerate(points):
+            bpm = (
+                heart_rate[position]
+                if heart_rate is not None and position < len(heart_rate)
+                else None
+            )
+            cell = self._record(lat, lon, bpm)
             if (
                 previous_cell is not None
                 and index == previous_index + 1
@@ -220,7 +251,7 @@ class SegmentAggregator:
             if stat.count >= min_count
         }
 
-    def _record(self, lat: float, lon: float) -> Cell:
+    def _record(self, lat: float, lon: float, bpm: float | None = None) -> Cell:
         cell = (round(lat / self._d_lat), round(lon / self._d_lon))
         accumulator = self._cells.get(cell)
         if accumulator is None:
@@ -231,7 +262,23 @@ class SegmentAggregator:
             accumulator[0] += lat
             accumulator[1] += lon
             accumulator[2] += 1
+        if self._collect_heart_rate and bpm is not None:
+            # Every point that fell in this cell contributes, across every
+            # workout — so the mean is over traversals, not over one outing.
+            bucket = self._cell_bpm.get(cell)
+            if bucket is None:
+                self._cell_bpm[cell] = [bpm, 1]
+            else:
+                bucket[0] += bpm
+                bucket[1] += 1
         return cell
+
+    def heart_rate(self, cell: Cell) -> float | None:
+        """Mean bpm recorded in a cell, or None if nothing was sampled there."""
+        bucket = self._cell_bpm.get(cell)
+        if bucket is None or bucket[1] == 0:
+            return None
+        return bucket[0] / bucket[1]
 
     def coordinate(self, cell: Cell) -> list[float]:
         """Representative [longitude, latitude] for a cell — GeoJSON axis order."""
@@ -318,18 +365,26 @@ class SegmentAggregator:
             self._segments[_edge_key(chain[i], chain[i + 1])]
             for i in range(len(chain) - 1)
         ]
+        properties: dict[str, Any] = {
+            "count": max(s.count for s in stats),
+            "workout_types": sorted({t for s in stats for t in s.types}),
+            "first_seen": min(s.first for s in stats),
+            "last_seen": max(s.last for s in stats),
+        }
+        if self._collect_heart_rate:
+            # One value per vertex, not per feature: the renderer walks these
+            # to shade the line continuously along its length.
+            properties["heart_rate"] = [
+                None if bpm is None else round(bpm)
+                for bpm in (self.heart_rate(cell) for cell in chain)
+            ]
         return {
             "type": "Feature",
             "geometry": {
                 "type": "LineString",
                 "coordinates": [self.coordinate(cell) for cell in chain],
             },
-            "properties": {
-                "count": max(s.count for s in stats),
-                "workout_types": sorted({t for s in stats for t in s.types}),
-                "first_seen": min(s.first for s in stats),
-                "last_seen": max(s.last for s in stats),
-            },
+            "properties": properties,
         }
 
 

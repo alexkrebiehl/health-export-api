@@ -129,6 +129,7 @@ class DataProvider:
         max_vertices: int,
         tolerance_m: float,
         min_count: int,
+        include_heart_rate: bool = False,
     ) -> dict[str, Any]:
         """Route coverage — the body of ``GET /v1/workouts/routes/geojson``.
 
@@ -137,6 +138,9 @@ class DataProvider:
         """
         # Keyed on the filters that shape the geometry. Presentation options
         # are deliberately absent, so restyling an area is a cache hit.
+        # `include_heart_rate` is not one of them: it adds a value per
+        # coordinate, so the two answers are different payloads and must not
+        # share an entry.
         key = (
             "coverage",
             lat,
@@ -149,6 +153,7 @@ class DataProvider:
             max_vertices,
             tolerance_m,
             min_count,
+            include_heart_rate,
         )
 
         # Checked before queueing, so a cached answer never waits behind a
@@ -175,6 +180,7 @@ class DataProvider:
                 max_vertices=max_vertices,
                 tolerance_m=tolerance_m,
                 min_count=min_count,
+                include_heart_rate=include_heart_rate,
             )
             self._cache.put(key, result)
             return result

@@ -17,7 +17,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 # Workout type written by Hevy to HealthKit — excluded by default.
 HEVY_WORKOUT_TYPE = "Traditional Strength Training"
@@ -56,6 +56,23 @@ class RoutePoint:
     speed_accuracy: float | None = None
     course: float | None = None
     course_accuracy: float | None = None
+
+
+@dataclass(frozen=True)
+class HeartRateSample:
+    """One bucket of the workout's heart-rate series.
+
+    Health Auto Export samples heart rate on a coarse cadence — a minute per
+    bucket in practice, against roughly one route point per second — so these
+    are far sparser than the route and are interpolated onto it at query time
+    rather than stored per point. ``Avg`` is what we keep; ``Max``/``Min`` are
+    in the payload too, and staying at sample granularity leaves them
+    recoverable without another backfill.
+    """
+
+    workout_id: str
+    sampled_at: datetime
+    bpm: float
 
 
 def _parse_timestamp(value: str) -> datetime | None:
@@ -204,3 +221,102 @@ def _iter_route_points(records: Iterable[Mapping[str, Any]]) -> Iterable[RoutePo
 
 
 
+
+def _iter_heart_rate_samples(
+    records: Iterable[Mapping[str, Any]],
+) -> Iterable[HeartRateSample]:
+    """Yield HeartRateSample objects from every workout carrying a series."""
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        raw_list = data.get("workouts")
+        if not isinstance(raw_list, list):
+            continue
+
+        for raw in raw_list:
+            if not isinstance(raw, Mapping):
+                continue
+
+            wid = raw.get("id")
+            if not isinstance(wid, str) or not wid:
+                continue
+
+            series = raw.get("heartRateData", [])
+            if not isinstance(series, list) or not series:
+                continue
+
+            for sample in series:
+                if not isinstance(sample, Mapping):
+                    continue
+
+                when = sample.get("date")
+                if not isinstance(when, str):
+                    continue
+                sampled_at = _parse_timestamp(when)
+                if sampled_at is None:
+                    continue
+
+                # The key is capitalised in the payload, unlike every other
+                # field on the workout.
+                bpm = sample.get("Avg")
+                try:
+                    bpm = float(bpm)  # type: ignore[arg-type]
+                except (ValueError, TypeError):
+                    continue
+                if bpm <= 0:
+                    continue
+
+                yield HeartRateSample(
+                    workout_id=wid, sampled_at=sampled_at, bpm=bpm
+                )
+
+def interpolate_heart_rate(
+    point_epochs: Sequence[float],
+    samples: Sequence[tuple[float, float]],
+) -> list[float | None]:
+    """Heart rate at each route point, interpolated between samples.
+
+    The series is roughly a sample a minute against a route point a second, so
+    reading the nearest sample would draw the map in visible minute-long bands.
+    Interpolating linearly in time between the two bracketing samples is what
+    makes the gradient continuous.
+
+    Outside the sampled span the value is held at the nearest end rather than
+    extrapolated: a route commonly runs a little past the last sample (~3% of
+    points in this data), and continuing the last slope would invent a trend
+    the watch never recorded.
+
+    Both sequences must be ascending in time. Returns one value per point,
+    ``None`` throughout when there are no samples.
+    """
+    if not samples:
+        return [None] * len(point_epochs)
+
+    values: list[float | None] = []
+    cursor = 0
+    for when in point_epochs:
+        # Both sides ascend, so the cursor only ever moves forward: this is a
+        # merge, not a search per point.
+        while cursor + 1 < len(samples) and samples[cursor + 1][0] <= when:
+            cursor += 1
+
+        at, bpm = samples[cursor]
+        if when <= at:
+            values.append(bpm)          # before the first sample
+            continue
+        if cursor + 1 >= len(samples):
+            values.append(bpm)          # after the last
+            continue
+
+        next_at, next_bpm = samples[cursor + 1]
+        span = next_at - at
+        if span <= 0:
+            values.append(bpm)          # duplicate stamps: no slope to walk
+            continue
+        ratio = (when - at) / span
+        values.append(bpm + (next_bpm - bpm) * ratio)
+    return values

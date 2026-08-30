@@ -459,3 +459,92 @@ def test_route_geojson_requires_a_bearer_token(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
     assert client.get("/v1/workouts/routes/geojson", params=BOX).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Heart rate rides along as a per-vertex property
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_hr(
+    tolerance_m: float, *tracks: tuple[list[tuple[float, float]], list[float | None]]
+) -> list[dict[str, Any]]:
+    aggregator = SegmentAggregator(
+        center_lat=52.52, tolerance_m=tolerance_m, collect_heart_rate=True
+    )
+    for index, (track, bpm) in enumerate(tracks):
+        aggregator.add_workout(
+            [(i, lat, lon) for i, (lat, lon) in enumerate(track)],
+            workout_type="Outdoor Walk",
+            started_date=f"2026-07-{10 + index:02d}",
+            heart_rate=bpm,
+        )
+    return aggregator.features()
+
+
+def test_a_chain_does_not_split_where_the_heart_rate_changes() -> None:
+    """The whole design rests on this.
+
+    Colour varies continuously along a path, so folding it into the chain-break
+    rule would split at nearly every interior vertex — doubling the vertex count
+    and pushing the caller into coarsening the grid. Intensity is accumulated
+    per cell precisely so chaining is left alone.
+    """
+    track = [(CENTER_LAT, _lon(step)) for step in range(5)]
+    rising = [100.0, 120.0, 140.0, 160.0, 180.0]
+
+    features = _aggregate_hr(15, (track, rising))
+
+    assert len(features) == 1
+    assert len(features[0]["geometry"]["coordinates"]) == 5
+
+
+def test_every_vertex_carries_its_own_value() -> None:
+    """One value per coordinate is what lets the renderer shade along the line.
+
+    Asserted as a pairing rather than a sequence: a chain is walked from
+    whichever end `chains()` happens to start at, so the run may come back
+    reversed. What has to hold is that each value stays with its own vertex.
+    """
+    track = [(CENTER_LAT, _lon(step)) for step in range(4)]
+    expected = {_lon(step): bpm for step, bpm in enumerate([100, 110, 120, 130])}
+
+    features = _aggregate_hr(15, (track, [100.0, 110.0, 120.0, 130.0]))
+
+    coordinates = features[0]["geometry"]["coordinates"]
+    series = features[0]["properties"]["heart_rate"]
+    assert len(series) == len(coordinates)
+    paired = {
+        min(expected, key=lambda known: abs(known - lon)): bpm
+        for (lon, _lat), bpm in zip(coordinates, series)
+    }
+    assert paired == expected
+
+
+def test_a_cell_crossed_twice_reports_the_mean_of_both_visits() -> None:
+    """Mean across traversals: the typical effort on a stretch, not one outing."""
+    track = [(CENTER_LAT, _lon(step)) for step in range(3)]
+
+    features = _aggregate_hr(
+        15, (track, [100.0, 100.0, 100.0]), (track, [140.0, 140.0, 140.0])
+    )
+
+    assert features[0]["properties"]["heart_rate"] == [120, 120, 120]
+
+
+def test_an_unsampled_cell_is_null_rather_than_zero() -> None:
+    """Null is "not measured". Zero would be a reading, and the coldest one."""
+    track = [(CENTER_LAT, _lon(step)) for step in range(3)]
+
+    features = _aggregate_hr(15, (track, [100.0, None, 120.0]))
+
+    assert features[0]["properties"]["heart_rate"] == [100, None, 120]
+
+
+def test_the_property_is_absent_unless_it_was_asked_for() -> None:
+    """It is a value per coordinate, so it is not free — off by default."""
+    track = [(CENTER_LAT, _lon(step)) for step in range(3)]
+
+    features = _aggregate(15, track)
+
+    assert "heart_rate" not in features[0]["properties"]

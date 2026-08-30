@@ -36,6 +36,12 @@ _HEAD = '<link rel="stylesheet" href="/static/leaflet.css">'
 # is hidden, so it carries no markup and no `--`.
 DEFAULT_BASEMAP = "street"
 
+# What the line colour means. `frequency` is the traversal count the map was
+# built around; `heart_rate` shades the line by effort instead, leaving width
+# to carry frequency so the two encodings stay independent.
+DEFAULT_COLOR_BY = "frequency"
+COLOR_BY_HEART_RATE = "heart_rate"
+
 _BASEMAPS: dict[str, dict[str, Any]] = {
     "street": {
         "url": "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
@@ -104,7 +110,12 @@ _BODY = Template("""<!-- $credits
   // a map that swallows scroll is actively annoying inside a scrolling
   // dashboard. Every gesture is opt-in.
   var interactive = $interactive;
+  var byIntensity = $by_intensity;
   var map = L.map('map', {
+    // Colouring by intensity draws each chain as a run of short strokes, so
+    // the path count goes from one-per-chain to one-per-segment. Canvas holds
+    // up where SVG would not; the frequency view keeps SVG's crisper edges.
+    preferCanvas: byIntensity,
     zoomControl: $zoom_control, attributionControl: $attribution,
     dragging: interactive, scrollWheelZoom: interactive,
     doubleClickZoom: interactive, touchZoom: interactive,
@@ -144,6 +155,27 @@ _BODY = Template("""<!-- $credits
   var denom = Math.log(max) || 1;
   function level(c) { return Math.log(Math.max(1, c)) / denom; }
 
+  // Heart rate is not skewed the way traversal counts are, so it scales
+  // linearly — but it is clamped to percentiles rather than to the extremes,
+  // because one stray reading at either end would flatten everything else into
+  // the middle of the ramp.
+  var lo = 0, hi = 1;
+  if (byIntensity) {
+    var seen = [];
+    feats.forEach(function (f) {
+      (f.properties.heart_rate || []).forEach(function (v) {
+        if (v !== null && v !== undefined) { seen.push(v); }
+      });
+    });
+    seen.sort(function (a, b) { return a - b; });
+    if (seen.length) {
+      lo = seen[Math.floor(seen.length * 0.05)];
+      hi = seen[Math.floor(seen.length * 0.95)];
+      if (hi <= lo) { hi = lo + 1; }
+    }
+  }
+  function intensity(v) { return (v - lo) / (hi - lo); }
+
   // null unless the caller pinned a weight, in which case every line draws at
   // the same thickness and frequency is carried by colour alone.
   var fixedWeight = $weight;
@@ -151,24 +183,59 @@ _BODY = Template("""<!-- $credits
     return fixedWeight === null ? 1.2 + t * 4 : fixedWeight;
   }
 
+  // Where a cell was never sampled, a muted neutral — running it through the
+  // ramp would paint "no reading" as "resting", which is a claim the data is
+  // not making.
+  var UNSAMPLED = dark ? 'rgb(90,96,110)' : 'rgb(178,184,196)';
+
   // Least-travelled first so the routes that matter draw on top.
   var drawn = [];
   feats.slice().sort(function (a, b) {
     return (a.properties.count || 0) - (b.properties.count || 0);
   }).forEach(function (f) {
+    // Width still carries frequency in either mode, so when colour moves to
+    // intensity the two stop saying the same thing twice.
     var t = level(f.properties.count || 1);
-    // `interactive: false` also spares Leaflet wiring pointer handlers to
-    // every path — and there can be thousands of them at a fine tolerance.
-    var layer = L.geoJSON(f, {
-      interactive: interactive,
-      style: { color: colour(t), weight: strokeWeight(t), opacity: 0.9, lineCap: 'round' }
-    });
-    if (interactive) {
-      layer.bindTooltip(
-        f.properties.count + '&times; &middot; ' +
-        (f.properties.workout_types || []).join(', ') + '<br>' +
-        f.properties.first_seen + ' &rarr; ' + f.properties.last_seen
-      );
+    var layer;
+    if (byIntensity) {
+      // One stroke per segment, each shaded from the mean of its endpoints.
+      // That is what makes the line a gradient rather than a run of blocks:
+      // vertices are grid cells, so the steps are a tolerance apart and the
+      // seams are invisible at any zoom the tile is read at.
+      var coords = f.geometry.coordinates;
+      var series = f.properties.heart_rate || [];
+      var pieces = [];
+      for (var i = 0; i + 1 < coords.length; i++) {
+        var a = series[i], b = series[i + 1];
+        var shade = UNSAMPLED;
+        if (a !== null && a !== undefined && b !== null && b !== undefined) {
+          shade = colour(intensity((a + b) / 2));
+        } else if (a !== null && a !== undefined) {
+          shade = colour(intensity(a));
+        } else if (b !== null && b !== undefined) {
+          shade = colour(intensity(b));
+        }
+        pieces.push(L.polyline(
+          [[coords[i][1], coords[i][0]], [coords[i + 1][1], coords[i + 1][0]]],
+          { interactive: false, color: shade, weight: strokeWeight(t),
+            opacity: 0.9, lineCap: 'round' }
+        ));
+      }
+      layer = L.featureGroup(pieces);
+    } else {
+      // `interactive: false` also spares Leaflet wiring pointer handlers to
+      // every path — and there can be thousands of them at a fine tolerance.
+      layer = L.geoJSON(f, {
+        interactive: interactive,
+        style: { color: colour(t), weight: strokeWeight(t), opacity: 0.9, lineCap: 'round' }
+      });
+      if (interactive) {
+        layer.bindTooltip(
+          f.properties.count + '&times; &middot; ' +
+          (f.properties.workout_types || []).join(', ') + '<br>' +
+          f.properties.first_seen + ' &rarr; ' + f.properties.last_seen
+        );
+      }
     }
     layer.addTo(map);
     drawn.push(layer);
@@ -228,7 +295,10 @@ _BODY = Template("""<!-- $credits
       '<b>' + meta.workout_count + '</b> workouts &middot; <b>' +
       feats.length + '</b> paths' +
       (meta.min_count > 1 ? ' &middot; ' + meta.min_count + '+ passes' : '') +
-      '<div class="scale"><span>1</span><i></i><span>' + max + '&times;</span></div>';
+      (byIntensity
+        ? '<div class="scale"><span>' + Math.round(lo) + '</span><i></i><span>' +
+          Math.round(hi) + ' bpm</span></div>'
+        : '<div class="scale"><span>1</span><i></i><span>' + max + '&times;</span></div>');
     return el;
   };
   info.addTo(map);
@@ -247,6 +317,7 @@ def render_map_page(
     interactive: bool = False,
     weight: float | None = None,
     basemap: str = DEFAULT_BASEMAP,
+    color_by: str = DEFAULT_COLOR_BY,
     options: PageOptions = PageOptions(),
 ) -> str:
     """Render a coverage FeatureCollection as a standalone Leaflet page.
@@ -278,6 +349,13 @@ def render_map_page(
     the page chrome around it but leaves the tiles alone. An unknown value
     raises ``KeyError`` — the router constrains it to the known set before it
     gets here.
+
+    ``color_by`` picks what the line colour means. ``"frequency"`` is the
+    traversal count on a log scale, as the map has always drawn it.
+    ``"heart_rate"`` shades each line along its length from the per-vertex bpm
+    the collection carries, which the caller must have asked the provider for
+    — without it every line falls back to the unsampled neutral. Width keeps
+    carrying frequency either way.
     """
     # `<` only ever appears inside JSON strings, so escaping it keeps the
     # document valid while making it impossible for a workout name to close
@@ -298,6 +376,7 @@ def render_map_page(
             # Same `<` escape as the collection above: the attribution strings
             # carry anchor markup, and nothing embedded in a <script> block
             # should be able to spell a closing tag.
+            by_intensity="true" if color_by == COLOR_BY_HEART_RATE else "false",
             basemap=json.dumps(
                 {k: v for k, v in base.items() if k != "credits"},
                 separators=(",", ":"),

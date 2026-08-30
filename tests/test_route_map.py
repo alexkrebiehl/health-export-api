@@ -446,3 +446,88 @@ def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> 
     assert embedded(html)["features"][0]["properties"]["workout_types"] == [
         "</script><script>alert(1)</script>"
     ]
+
+
+def test_the_colour_means_frequency_by_default(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
+    ).text
+
+    assert "var byIntensity = false;" in html
+    # The log scale is what suits a heavily skewed traversal count.
+    assert "function level(c) { return Math.log(Math.max(1, c)) / denom; }" in html
+    assert "heart_rate" not in embedded(html)["features"][0]["properties"]
+
+
+def test_colouring_by_heart_rate_switches_the_scale_and_the_unit(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "color_by": "heart_rate"},
+    ).text
+
+    assert "var byIntensity = true;" in html
+    # Linear, not log: bpm is not skewed the way a traversal count is.
+    assert "function intensity(v) { return (v - lo) / (hi - lo); }" in html
+    # Clamped to percentiles so one stray reading cannot flatten the ramp.
+    assert "seen.length * 0.05" in html and "seen.length * 0.95" in html
+    assert "bpm</span>" in html
+
+
+def test_the_intensity_view_asks_the_store_for_the_values(tmp_path: Path) -> None:
+    """The property is off by default, so the render has to request it."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "color_by": "heart_rate"},
+    ).text
+
+    assert "heart_rate" in embedded(html)["features"][0]["properties"]
+
+
+def test_width_keeps_carrying_frequency_when_colour_moves_to_effort(
+    tmp_path: Path,
+) -> None:
+    """Otherwise the two encodings would say the same thing twice."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "color_by": "heart_rate"},
+    ).text
+
+    assert "var t = level(f.properties.count || 1);" in html
+    assert "weight: strokeWeight(t)" in html
+
+
+def test_the_intensity_view_renders_on_canvas(tmp_path: Path) -> None:
+    """A stroke per segment is far more paths than SVG will hold up under."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    default = client.get(
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
+    ).text
+
+    assert "preferCanvas: byIntensity" in default
+
+
+def test_an_unknown_colour_mode_is_rejected(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "color_by": "elevation"},
+    )
+
+    assert response.status_code == 422

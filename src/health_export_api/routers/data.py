@@ -196,6 +196,7 @@ def build_data_router(
         max_vertices: int = Query(default=50_000, ge=100, le=200_000),
         tolerance_m: float = Query(default=15.0, ge=1, le=1000),
         min_count: int = Query(default=1, ge=1, le=1000),
+        include_heart_rate: bool = Query(default=False),
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         authorize(authorization)
@@ -214,6 +215,7 @@ def build_data_router(
                 max_vertices=max_vertices,
                 tolerance_m=tolerance_m,
                 min_count=min_count,
+                include_heart_rate=include_heart_rate,
             )
 
     @router.get("/v1/workouts/{workout_id}/route")

@@ -36,6 +36,7 @@ A second, smaller group — `date_range`, `start_date`, `end_date` — is shared
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
 | `weight` | unset | Pin every line to this stroke width (0–20). Unset, width scales with traversal count; set, frequency is carried by colour alone. |
 | `basemap` | `street` | Tile provider: `street` (CARTO) or `topo` (OpenTopoMap). See below. |
+| `color_by` | `frequency` | What the line colour means: `frequency` (traversal count) or `heart_rate`. See below. |
 
 ### Load shedding and caching
 
@@ -44,7 +45,7 @@ Coverage rendering is pure Python and therefore GIL-bound, so concurrent request
 Two mechanisms handle that:
 
 - **Requests are serialised.** One coverage render runs at a time. Beyond a queue depth of 10 the API returns **`429 Too Many Requests`** with a `Retry-After` header rather than letting the pile-up grow.
-- **Results are cached** for `HEALTH_EXPORT_CACHE_TTL` seconds (default `300`, set `0` to disable). The key is the *filters* — `lat`, `lon`, `width`, `height`, dates, `workout_type`, `max_vertices`, `tolerance_m`, `min_count` — and deliberately not the presentation options, so re-rendering the same area with a different `weight` or without the zoom control is instant. The cache is checked before queueing, so a repeat never waits behind a running render, and again after acquiring the turn, so a burst of identical requests computes once.
+- **Results are cached** for `HEALTH_EXPORT_CACHE_TTL` seconds (default `300`, set `0` to disable). The key is the *filters* — `lat`, `lon`, `width`, `height`, dates, `workout_type`, `max_vertices`, `tolerance_m`, `min_count`, plus `include_heart_rate`, which belongs there because it changes the payload rather than just its styling — and deliberately not the presentation options, so re-rendering the same area with a different `weight` or without the zoom control is instant. The cache is checked before queueing, so a repeat never waits behind a running render, and again after acquiring the turn, so a burst of identical requests computes once.
 
 **Ingesting an export drops the whole cache**, so new data appears on the next request rather than waiting out the TTL. Without that the cache is only time-bounded, and a reading can sit in the store for five minutes while the rendered tiles still serve the figures from before it — `/v1/health/summary` current, the dashboard behind, and nothing on the page to say which you are looking at. Everything goes, not just the summaries: an export can carry workouts, and those move the map.
 
@@ -53,6 +54,16 @@ The TTL still matters for the burst it was added for — changing a URL in a Hom
 **Interactivity is off by default.** A dashboard tile is something you glance at, not something you drive, and a map that captures the scroll wheel is actively hostile inside a scrolling dashboard. `interactive=false` disables dragging, wheel/double-click/pinch/box zoom, keyboard navigation, and the per-path tooltips. Set `interactive=true` to get all of it back.
 
 It is independent of `zoom_control`: buttons on with interactivity off is a usable "look closer, but stay put" combination. Turning interactivity off also skips binding a tooltip and pointer handlers to every path, which is not free when a fine `tolerance_m` produces thousands of them.
+
+**`color_by=heart_rate` colours by effort instead of habit.** By default colour and width both encode the traversal `count`, saying the same thing twice. Setting `color_by=heart_rate` moves colour onto heart rate and leaves width on frequency, so a line says *how often* by its thickness and *how hard* by its colour at the same time.
+
+The value is a **mean across traversals**, so the map shows the typical effort on a stretch rather than any single outing — a sprint down a street walked a hundred times is averaged away, by design. Colour is scaled linearly (bpm is not skewed the way a traversal count is) and clamped to the 5th and 95th percentiles of what is on screen, so one stray reading cannot flatten everything else into the middle of the ramp. The legend switches from `1 … N×` to the clamped bpm range.
+
+Heart rate arrives about once a minute against roughly a route point a second, so it is **interpolated linearly in time** between the two bracketing samples — reading the nearest one instead would draw the map in visible minute-long bands. Outside the sampled span the value is held rather than extrapolated: a route commonly runs a little past the last sample. A stretch with no reading at all draws in a muted neutral rather than at the cold end of the ramp, because "not measured" is not "resting".
+
+Under the hood the value is accumulated per *vertex*, not per path, which is what lets the line shade continuously along its length. The intensity view therefore draws a stroke per segment rather than one per path, and switches the map to a canvas renderer to cope.
+
+Unlike the other options here `color_by` is **not** purely presentational: `heart_rate` adds a value per coordinate to the payload, so it is part of the cache key and the two modes cache separately. On the GeoJSON endpoint the same data is requested with `include_heart_rate=true`.
 
 **`basemap=topo` draws terrain.** `street`, the default, is CARTO — a flat street map that follows the viewer's light/dark setting. `topo` is OpenTopoMap: contours, shaded relief, and its own street rendering baked into the tile image, which is why topography and streets cannot be separated here. Splitting them would mean a second provider for the hillshade and a blend composite tuned separately per theme; if that becomes worth it, the provider descriptor in `map_page.py` is the place to add it.
 
