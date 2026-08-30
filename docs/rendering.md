@@ -21,7 +21,7 @@ These mean the same thing on `/v1/render/map`, `/v1/render/chart` and `/v1/rende
 
 `margin` is a percentage rather than pixels because these pages embed anywhere from ~240px to ~1100px wide, and a fixed inset would swallow a small card and vanish in a large one. It is *additive*: `0` renders exactly as if the parameter were absent. Percentage padding resolves against the width on all four sides, so one number gives a visually even inset. A page that sizes its own type to the frame — the stat tile does — measures the padded box, so raising the margin shrinks the text to match rather than pushing it out.
 
-`theme` stamps `data-theme` on `<html>`. That is what the palette keys its light/dark overrides on, and what the map consults before falling back to `prefers-color-scheme`, so an override moves the basemap tiles as well as the page. Left at `auto` nothing is stamped and every page follows the viewer, which is the usual case.
+`theme` stamps `data-theme` on `<html>`. That is what the palette keys its light/dark overrides on, and what the map consults before falling back to `prefers-color-scheme`, so an override moves the basemap tiles as well as the page. Left at `auto` nothing is stamped and every page follows the viewer, which is the usual case. The one exception is `basemap=topo`, which has no dark cartography to swap to and is dimmed instead — see the coverage map below.
 
 A second, smaller group — `date_range`, `start_date`, `end_date` — is shared by the endpoints that plot a span, which is the map and the chart. The stat tile scopes itself with `window` instead.
 
@@ -35,6 +35,7 @@ A second, smaller group — `date_range`, `start_date`, `end_date` — is shared
 | `zoom_control` | `false` | Show Leaflet's `+`/`−` buttons. Independent of `interactive`. |
 | `attribution` | `true` | Show the map credit. See the note below before turning this off. |
 | `weight` | unset | Pin every line to this stroke width (0–20). Unset, width scales with traversal count; set, frequency is carried by colour alone. |
+| `basemap` | `street` | Tile provider: `street` (CARTO) or `topo` (OpenTopoMap). See below. |
 
 ### Load shedding and caching
 
@@ -53,9 +54,17 @@ The TTL still matters for the burst it was added for — changing a URL in a Hom
 
 It is independent of `zoom_control`: buttons on with interactivity off is a usable "look closer, but stay put" combination. Turning interactivity off also skips binding a tooltip and pointer handlers to every path, which is not free when a fine `tolerance_m` produces thousands of them.
 
-> **Attribution.** OpenStreetMap and CARTO both require credit for their data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish.
+**`basemap=topo` draws terrain.** `street`, the default, is CARTO — a flat street map that follows the viewer's light/dark setting. `topo` is OpenTopoMap: contours, shaded relief, and its own street rendering baked into the tile image, which is why topography and streets cannot be separated here. Splitting them would mean a second provider for the hillshade and a blend composite tuned separately per theme; if that becomes worth it, the provider descriptor in `map_page.py` is the place to add it.
 
-The GeoJSON is embedded in the document rather than fetched, so the page is a single request. Leaflet is served same-origin from `/static`; the only outbound dependency is the CARTO basemap tiles (OpenStreetMap data). Lines are coloured and weighted by traversal `count` on a log scale, and the view fits the routes rather than the query box — the box is a filter and is usually much larger than the area actually walked.
+Almost nothing about the two providers is interchangeable — different subdomain sets, a retina suffix on one and not the other, and zoom ceilings of 20 against 17 — so the choice is a descriptor rather than a URL swap. Above OpenTopoMap's ceiling Leaflet upscales the last real tile instead of requesting ones the server does not have.
+
+There is no dark OpenTopoMap. Rather than leave a lit panel among dark cards, a dark theme dims the tile pane with a CSS filter; the routes draw in their own SVG pane and keep their full contrast. So for `topo`, `theme` changes how the basemap is *lit* rather than which tiles are fetched.
+
+`basemap` is a presentation option, so — like `weight` and `interactive` — it is not part of the cache key: the same area renders instantly on either provider.
+
+> **Attribution.** Every provider requires credit for its data and tiles, so `attribution` defaults to on and hiding it is a deliberate choice for you to make. The credit remains in an HTML comment in the page source either way, but that is not a substitute for displaying it on a map you publish. Under `basemap=topo` the ask is stricter: OpenTopoMap is CC-BY-SA and requires crediting the map *style* as well as the OpenStreetMap and SRTM data behind it.
+
+The GeoJSON is embedded in the document rather than fetched, so the page is a single request. Leaflet is served same-origin from `/static`; the only outbound dependency is the basemap tiles — CARTO or OpenTopoMap, both over OpenStreetMap data. Lines are coloured and weighted by traversal `count` on a log scale, and the view fits the routes rather than the query box — the box is a filter and is usually much larger than the area actually walked.
 
 **Authentication.** An iframe cannot send an `Authorization` header, so the map page also accepts a token in the query string. That token is *not* `HEALTH_EXPORT_API_TOKEN` — putting the real token in a dashboard config and browser history would expose ingestion rights. Instead a second, read-only token is derived at startup:
 

@@ -74,6 +74,7 @@ def build_render_router(
         attribution: bool = Query(default=True),
         interactive: bool = Query(default=False),
         weight: float | None = Query(default=None, gt=0, le=20),
+        basemap: str = Query(default="street", pattern="^(street|topo)$"),
         embed_token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
         page: PageOptions = PageDep,
@@ -106,6 +107,7 @@ def build_render_router(
                 attribution=attribution,
                 interactive=interactive,
                 weight=weight,
+                basemap=basemap,
             )
         )
 

@@ -233,6 +233,94 @@ def test_attribution_is_on_by_default_and_survives_being_hidden(
         assert "OpenStreetMap" in html and "CARTO" in html
 
 
+def test_the_basemap_defaults_to_the_carto_street_tiles(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
+    ).text
+
+    assert "basemaps.cartocdn.com" in html
+    assert "opentopomap.org" not in html
+    # CARTO has both cartographies, so the page swaps rather than dims.
+    assert '"urlDark"' in html and "dark_all" in html and "light_all" in html
+    assert '"tinted":false' in html
+
+
+def test_the_topo_basemap_swaps_the_provider_and_its_ceiling(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "basemap": "topo"},
+    ).text
+
+    assert "tile.opentopomap.org" in html
+    assert "basemaps.cartocdn.com" not in html
+    # None of this is interchangeable with CARTO's: a different subdomain set,
+    # no retina suffix, and a lower ceiling above which Leaflet must upscale
+    # rather than request tiles OpenTopoMap does not serve.
+    assert '"subdomains":"abc"' in html
+    assert "{r}" not in html
+    assert '"maxNativeZoom":17' in html
+
+
+def test_topo_has_no_dark_cartography_so_it_is_dimmed(tmp_path: Path) -> None:
+    """There is no dark OpenTopoMap, so a dark page dims the tile pane."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "basemap": "topo"},
+    ).text
+
+    assert '"urlDark"' not in html
+    assert '"tinted":true' in html
+    # Dimmed under both the stamped theme and the viewer's own setting, so an
+    # explicit ?theme wins either way — the same pair theme.py keys on.
+    assert ':root[data-theme="dark"] .tinted{filter:' in html
+    assert ':root:not([data-theme="light"]) .tinted{filter:' in html
+
+
+def test_the_topo_credit_survives_the_attribution_being_hidden(
+    tmp_path: Path,
+) -> None:
+    """OpenTopoMap is CC-BY-SA: the *style* needs crediting, not just the data."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    params = {**BOX, "embed_token": EMBED_TOKEN, "basemap": "topo"}
+    default = client.get("/v1/render/map", params=params).text
+    hidden = client.get(
+        "/v1/render/map", params={**params, "attribution": "false"}
+    ).text
+
+    assert "attributionControl: false" in hidden
+    for html in (default, hidden):
+        assert "OpenTopoMap" in html and "CC-BY-SA" in html
+        assert "OpenStreetMap" in html and "SRTM" in html
+    # The fallback is an HTML comment, so a credit that spelled `--` would
+    # close it early and swallow the rest of the page.
+    comment = hidden[hidden.index("<!--") : hidden.index("-->")]
+    assert "OpenTopoMap" in comment and "--" not in comment[4:]
+
+
+def test_an_unknown_basemap_is_rejected(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "basemap": "satellite"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_weight_scales_with_count_unless_pinned(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
