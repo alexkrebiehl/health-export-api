@@ -9,9 +9,10 @@ constraints shaped it:
   header, so a client-side fetch would have nowhere to put the credential.
   Leaflet is served from ``/static`` rather than a CDN.
 
-* **The basemap is the only outbound dependency.** Tiles come from CARTO
-  (OpenStreetMap data). Without network access the routes still draw, just
-  over an empty background.
+* **The basemap is the only outbound dependency.** Tiles come from whichever
+  provider ``basemap`` selects — CARTO by default, OpenTopoMap for ``topo``,
+  both over OpenStreetMap data. Without network access the routes still draw,
+  just over an empty background.
 """
 
 from __future__ import annotations
@@ -27,6 +28,52 @@ _RAMP = [(43, 58, 103), (42, 127, 168), (63, 174, 142), (224, 195, 65), (232, 80
 
 _HEAD = '<link rel="stylesheet" href="/static/leaflet.css">'
 
+# Almost nothing about the two providers is interchangeable — the retina
+# suffix, the subdomain set, the zoom ceiling and the licence all differ — so
+# the choice is a descriptor rather than a URL swap. `urlDark` absent means the
+# provider has no dark cartography and gets dimmed by CSS instead; `credits` is
+# the plain-text form that survives in the HTML comment when the on-map control
+# is hidden, so it carries no markup and no `--`.
+DEFAULT_BASEMAP = "street"
+
+_BASEMAPS: dict[str, dict[str, Any]] = {
+    "street": {
+        "url": "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+        "urlDark": "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        "subdomains": "abcd",
+        "maxNativeZoom": 20,
+        "tinted": False,
+        "attribution": (
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+            '&copy; <a href="https://carto.com/attributions">CARTO</a>'
+        ),
+        "credits": (
+            "Basemap tiles (c) CARTO, map data (c) OpenStreetMap contributors.\n"
+            "     https://www.openstreetmap.org/copyright https://carto.com/attributions"
+        ),
+    },
+    # OpenTopoMap is CC-BY-SA and requires crediting the *style*, not just the
+    # data, which is a stricter ask than CARTO's. It tops out at z17 and serves
+    # a repeated placeholder above that, hence maxNativeZoom.
+    "topo": {
+        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "subdomains": "abc",
+        "maxNativeZoom": 17,
+        "tinted": True,
+        "attribution": (
+            'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">'
+            "OpenStreetMap</a> contributors, SRTM | Map style: &copy; "
+            '<a href="https://opentopomap.org">OpenTopoMap</a> '
+            '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
+        ),
+        "credits": (
+            "Map data (c) OpenStreetMap contributors, SRTM.\n"
+            "     Map style (c) OpenTopoMap (CC-BY-SA).\n"
+            "     https://www.openstreetmap.org/copyright https://opentopomap.org"
+        ),
+    },
+}
+
 # Was a hardcoded slate palette that ignored `theme.py` entirely, which made
 # this the one card that never followed the viewer's light/dark setting even
 # though its basemap tiles always did.
@@ -41,11 +88,24 @@ _STYLE = Template("""  #map{position:absolute;inset:0;background:var(--surface)}
            background:linear-gradient(90deg,$gradient)}
   .empty{position:absolute;inset:0;display:flex;align-items:center;
          justify-content:center;color:var(--muted);text-align:center;padding:20px}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .tinted{filter:$tint}}
+  :root[data-theme="dark"] .tinted{filter:$tint}
 """)
 
+# Topographic cartography is light-only imagery, and left alone it reads as a
+# lit panel among dark cards. Dim the tile pane rather than the map: the routes
+# draw in their own SVG pane and keep their full contrast, so darkening the
+# ground makes them pop rather than fade.
+#
+# Chosen by eye against a CARTO dark_all tile of the same area. It does not try
+# to match that weight — OpenTopoMap needs some luminance left for contours and
+# relief to read at all — but .62 sat far too close to the undimmed original.
+# The contrast and saturation nudges hold the woodland greens and contour
+# browns apart once the brightness comes down.
+_TINT = "brightness(.42) contrast(1.12) saturate(.78)"
 
-_BODY = Template("""<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap contributors.
-     https://www.openstreetmap.org/copyright https://carto.com/attributions
+
+_BODY = Template("""<!-- $credits
      Kept here so the credit survives even when the on-map control is hidden. -->
 <div id="map"></div>
 <script type="application/json" id="coverage">$data</script>
@@ -70,13 +130,19 @@ _BODY = Template("""<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap con
   var stamped = document.documentElement.getAttribute('data-theme');
   var dark = stamped ? stamped === 'dark'
     : (!window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches);
-  L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') +
-    '/{z}/{x}/{y}{r}.png',
-    { maxZoom: 20, subdomains: 'abcd',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
-                   '&copy; <a href="https://carto.com/attributions">CARTO</a>' }
-  ).addTo(map);
+  // The provider is chosen server-side, but light-versus-dark cannot be: with
+  // ?theme=auto nothing is stamped and only the browser knows. So the server
+  // hands over both URLs and this picks. A provider with no dark cartography
+  // supplies only `url` and opts into the `tinted` class instead.
+  var base = $basemap;
+  L.tileLayer(dark && base.urlDark ? base.urlDark : base.url, {
+    // Above a provider's ceiling Leaflet upscales the last real tile rather
+    // than requesting ones that do not exist.
+    maxZoom: 20, maxNativeZoom: base.maxNativeZoom,
+    subdomains: base.subdomains,
+    className: base.tinted ? 'tinted' : '',
+    attribution: base.attribution
+  }).addTo(map);
 
   var stops = $ramp;
   function colour(t) {
@@ -197,6 +263,7 @@ def render_map_page(
     attribution: bool = True,
     interactive: bool = False,
     weight: float | None = None,
+    basemap: str = DEFAULT_BASEMAP,
     options: PageOptions = PageOptions(),
 ) -> str:
     """Render a coverage FeatureCollection as a standalone Leaflet page.
@@ -211,23 +278,32 @@ def render_map_page(
     inside a scrolling dashboard. It also skips wiring pointer handlers to
     every path, which is not free when there are thousands.
 
-    ``attribution`` is on by default and should stay on. OpenStreetMap and
-    CARTO both require credit for their data and tiles, so turning it off is a
-    deliberate choice for the caller to make, not a default. The credit stays
-    in an HTML comment either way.
+    ``attribution`` is on by default and should stay on. Every provider
+    requires credit for its data and tiles, so turning it off is a deliberate
+    choice for the caller to make, not a default — and under ``basemap="topo"``
+    it is a stricter ask, since OpenTopoMap is CC-BY-SA and wants its *style*
+    credited too. The credit stays in an HTML comment either way.
 
     ``weight`` pins every line to one stroke width. Left unset, width scales
     with traversal count alongside colour; set, frequency is carried by colour
     alone, which reads more evenly when the map is mostly one kind of route.
+
+    ``basemap`` picks the tile provider: ``"street"`` is CARTO, following the
+    viewer's light/dark setting as the rest of the page does; ``"topo"`` is
+    OpenTopoMap, which draws contours and shaded relief and bakes its own
+    streets into the tile. It has no dark cartography, so under a dark theme it
+    is dimmed rather than swapped. An unknown value raises ``KeyError`` — the
+    router constrains it to the known set before it gets here.
     """
     # `<` only ever appears inside JSON strings, so escaping it keeps the
     # document valid while making it impossible for a workout name to close
     # the <script> block early.
     data = json.dumps(collection, separators=(",", ":")).replace("<", "\\u003c")
     gradient = ",".join(f"rgb({r},{g},{b})" for r, g, b in _RAMP)
+    base = _BASEMAPS[basemap]
     return render_page(
         head=_HEAD,
-        style=_STYLE.substitute(gradient=gradient),
+        style=_STYLE.substitute(gradient=gradient, tint=_TINT),
         body=_BODY.substitute(
             data=data,
             ramp=json.dumps([list(c) for c in _RAMP]),
@@ -235,6 +311,14 @@ def render_map_page(
             attribution="true" if attribution else "false",
             interactive="true" if interactive else "false",
             weight="null" if weight is None else repr(float(weight)),
+            # Same `<` escape as the collection above: the attribution strings
+            # carry anchor markup, and nothing embedded in a <script> block
+            # should be able to spell a closing tag.
+            basemap=json.dumps(
+                {k: v for k, v in base.items() if k != "credits"},
+                separators=(",", ":"),
+            ).replace("<", "\\u003c"),
+            credits=base["credits"],
         ),
         options=options.with_title(title),
     )
