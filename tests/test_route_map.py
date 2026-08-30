@@ -243,9 +243,8 @@ def test_the_basemap_defaults_to_the_carto_street_tiles(tmp_path: Path) -> None:
 
     assert "basemaps.cartocdn.com" in html
     assert "opentopomap.org" not in html
-    # CARTO has both cartographies, so the page swaps rather than dims.
+    # CARTO has both cartographies, so the page swaps on the viewer's theme.
     assert '"urlDark"' in html and "dark_all" in html and "light_all" in html
-    assert '"tinted":false' in html
 
 
 def test_the_topo_basemap_swaps_the_provider_and_its_ceiling(
@@ -269,8 +268,8 @@ def test_the_topo_basemap_swaps_the_provider_and_its_ceiling(
     assert '"maxNativeZoom":17' in html
 
 
-def test_topo_has_no_dark_cartography_so_it_is_dimmed(tmp_path: Path) -> None:
-    """There is no dark OpenTopoMap, so a dark page dims the tile pane."""
+def test_topo_has_one_cartography_and_is_drawn_as_is(tmp_path: Path) -> None:
+    """There is no dark OpenTopoMap, and its tiles are not retouched either."""
     client = make_client(tmp_path)
     ingest(client)
 
@@ -279,12 +278,10 @@ def test_topo_has_no_dark_cartography_so_it_is_dimmed(tmp_path: Path) -> None:
         params={**BOX, "embed_token": EMBED_TOKEN, "basemap": "topo"},
     ).text
 
+    # Only one URL to offer, so nothing for the theme to swap to.
     assert '"urlDark"' not in html
-    assert '"tinted":true' in html
-    # Dimmed under both the stamped theme and the viewer's own setting, so an
-    # explicit ?theme wins either way — the same pair theme.py keys on.
-    assert ':root[data-theme="dark"] .tinted{filter:' in html
-    assert ':root:not([data-theme="light"]) .tinted{filter:' in html
+    # And no filter over the tile pane: the cartography is shown as drawn.
+    assert "filter:" not in html
 
 
 def test_the_topo_credit_survives_the_attribution_being_hidden(

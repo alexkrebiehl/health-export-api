@@ -21,7 +21,7 @@ These mean the same thing on `/v1/render/map`, `/v1/render/chart` and `/v1/rende
 
 `margin` is a percentage rather than pixels because these pages embed anywhere from ~240px to ~1100px wide, and a fixed inset would swallow a small card and vanish in a large one. It is *additive*: `0` renders exactly as if the parameter were absent. Percentage padding resolves against the width on all four sides, so one number gives a visually even inset. A page that sizes its own type to the frame — the stat tile does — measures the padded box, so raising the margin shrinks the text to match rather than pushing it out.
 
-`theme` stamps `data-theme` on `<html>`. That is what the palette keys its light/dark overrides on, and what the map consults before falling back to `prefers-color-scheme`, so an override moves the basemap tiles as well as the page. Left at `auto` nothing is stamped and every page follows the viewer, which is the usual case. The one exception is `basemap=topo`, which has no dark cartography to swap to and is dimmed instead — see the coverage map below.
+`theme` stamps `data-theme` on `<html>`. That is what the palette keys its light/dark overrides on, and what the map consults before falling back to `prefers-color-scheme`, so an override moves the basemap tiles as well as the page. Left at `auto` nothing is stamped and every page follows the viewer, which is the usual case. The one exception is `basemap=topo`, which has no dark cartography to swap to — see the coverage map below.
 
 A second, smaller group — `date_range`, `start_date`, `end_date` — is shared by the endpoints that plot a span, which is the map and the chart. The stat tile scopes itself with `window` instead.
 
@@ -58,7 +58,7 @@ It is independent of `zoom_control`: buttons on with interactivity off is a usab
 
 Almost nothing about the two providers is interchangeable — different subdomain sets, a retina suffix on one and not the other, and zoom ceilings of 20 against 17 — so the choice is a descriptor rather than a URL swap. Above OpenTopoMap's ceiling Leaflet upscales the last real tile instead of requesting ones the server does not have.
 
-There is no dark OpenTopoMap. Rather than leave a lit panel among dark cards, a dark theme dims the tile pane with a CSS filter; the routes draw in their own SVG pane and keep their full contrast. So for `topo`, `theme` changes how the basemap is *lit* rather than which tiles are fetched.
+There is no dark OpenTopoMap, and its tiles are not retouched to fake one — the cartography is shown as drawn. So for `topo`, `theme` moves the page chrome around the map but leaves the tiles alone, which does mean a light panel on a dark dashboard.
 
 `basemap` is a presentation option, so — like `weight` and `interactive` — it is not part of the cache key: the same area renders instantly on either provider.
 
