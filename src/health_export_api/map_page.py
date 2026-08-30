@@ -126,17 +126,50 @@ _BODY = Template("""<!-- Basemap tiles (c) CARTO, map data (c) OpenStreetMap con
   });
 
   var bbox = fc.bbox;
-  if (feats.length) {
-    // Fit the routes, not the query box. The box is a filter and is usually
-    // much larger than the area actually walked, which would leave the tile
-    // mostly empty map.
-    map.fitBounds(L.featureGroup(drawn).getBounds(), { padding: [16, 16] });
-  } else {
-    map.setView([(bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2], 14);
+  // Fit the routes, not the query box. The box is a filter and is usually
+  // much larger than the area actually walked, which would leave the tile
+  // mostly empty map.
+  var fitting = false, touched = false;
+  function fit() {
+    fitting = true;
+    if (feats.length) {
+      map.fitBounds(L.featureGroup(drawn).getBounds(),
+                    { padding: [16, 16], animate: false });
+    } else {
+      map.setView([(bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2], 14,
+                  { animate: false });
+    }
+    fitting = false;
+  }
+  fit();
+  if (!feats.length) {
     var d = document.createElement('div');
     d.className = 'empty';
     d.textContent = 'No routes recorded in this area yet.';
     document.body.appendChild(d);
+  }
+
+  // Leaflet measures the container once, at construction. Embedded in a
+  // dashboard the frame is routinely still being laid out — or hidden behind
+  // a card visibility condition, so zero-sized — when this runs, and a fit
+  // against a zero-sized box clamps to max zoom and stays there. Re-measure
+  // and re-fit on every size change instead, which also covers a card that is
+  // revealed later or a browser window being resized.
+  var box = document.getElementById('map');
+  var seenW = box.clientWidth, seenH = box.clientHeight;
+  function remeasure() {
+    var w = box.clientWidth, h = box.clientHeight;
+    if (!w || !h || (w === seenW && h === seenH)) return;
+    seenW = w; seenH = h;
+    map.invalidateSize({ animate: false });
+    // Don't yank the view back from under someone who has panned or zoomed.
+    if (!touched) fit();
+  }
+  map.on('dragstart zoomstart', function () { if (!fitting) touched = true; });
+  if (window.ResizeObserver) {
+    new ResizeObserver(remeasure).observe(box);
+  } else {
+    window.addEventListener('resize', remeasure);
   }
 
   var info = L.control({ position: 'bottomleft' });

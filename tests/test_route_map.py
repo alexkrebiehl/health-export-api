@@ -307,6 +307,44 @@ def test_interactivity_is_independent_of_the_zoom_buttons(tmp_path: Path) -> Non
     assert "var interactive = false;" in html
 
 
+def test_the_view_is_refitted_when_the_frame_is_resized(tmp_path: Path) -> None:
+    """A card revealed after load must not stay stuck at max zoom.
+
+    Leaflet measures its container once. Embedded in a dashboard the frame is
+    often still being laid out — or hidden behind a card visibility condition,
+    so zero-sized — when the script runs, and fitting against a zero-sized box
+    clamps to max zoom permanently. The page has to re-measure on resize.
+    """
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map", params={**BOX, "embed_token": EMBED_TOKEN}
+    ).text
+
+    assert "new ResizeObserver(remeasure).observe(box)" in html
+    assert "map.invalidateSize" in html
+    # The fit is a function so the observer can re-run it, not a one-shot call.
+    assert "function fit()" in html
+    # Old browsers without ResizeObserver still recover on a window resize.
+    assert "window.addEventListener('resize', remeasure)" in html
+
+
+def test_a_resize_does_not_undo_a_pan_or_zoom(tmp_path: Path) -> None:
+    """Re-fitting is for a frame that was mis-measured, not for the viewer."""
+    client = make_client(tmp_path)
+    ingest(client)
+
+    html = client.get(
+        "/v1/render/map",
+        params={**BOX, "embed_token": EMBED_TOKEN, "interactive": "true"},
+    ).text
+
+    assert "if (!touched) fit();" in html
+    # `fit` itself moves the map, so its own events must not count as a touch.
+    assert "if (!fitting) touched = true;" in html
+
+
 def test_a_workout_name_cannot_break_out_of_the_script_block(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     ingest(client, name="</script><script>alert(1)</script>")
