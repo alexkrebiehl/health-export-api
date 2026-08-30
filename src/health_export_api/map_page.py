@@ -31,7 +31,7 @@ _HEAD = '<link rel="stylesheet" href="/static/leaflet.css">'
 # Almost nothing about the two providers is interchangeable — the retina
 # suffix, the subdomain set, the zoom ceiling and the licence all differ — so
 # the choice is a descriptor rather than a URL swap. `urlDark` absent means the
-# provider has no dark cartography and gets dimmed by CSS instead; `credits` is
+# provider has only the one cartography, drawn as-is; `credits` is
 # the plain-text form that survives in the HTML comment when the on-map control
 # is hidden, so it carries no markup and no `--`.
 DEFAULT_BASEMAP = "street"
@@ -42,7 +42,6 @@ _BASEMAPS: dict[str, dict[str, Any]] = {
         "urlDark": "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
         "subdomains": "abcd",
         "maxNativeZoom": 20,
-        "tinted": False,
         "attribution": (
             '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
             '&copy; <a href="https://carto.com/attributions">CARTO</a>'
@@ -59,7 +58,6 @@ _BASEMAPS: dict[str, dict[str, Any]] = {
         "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
         "subdomains": "abc",
         "maxNativeZoom": 17,
-        "tinted": True,
         "attribution": (
             'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">'
             "OpenStreetMap</a> contributors, SRTM | Map style: &copy; "
@@ -88,21 +86,7 @@ _STYLE = Template("""  #map{position:absolute;inset:0;background:var(--surface)}
            background:linear-gradient(90deg,$gradient)}
   .empty{position:absolute;inset:0;display:flex;align-items:center;
          justify-content:center;color:var(--muted);text-align:center;padding:20px}
-  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .tinted{filter:$tint}}
-  :root[data-theme="dark"] .tinted{filter:$tint}
 """)
-
-# Topographic cartography is light-only imagery, and left alone it reads as a
-# lit panel among dark cards. Dim the tile pane rather than the map: the routes
-# draw in their own SVG pane and keep their full contrast, so darkening the
-# ground makes them pop rather than fade.
-#
-# Chosen by eye against a CARTO dark_all tile of the same area. It does not try
-# to match that weight — OpenTopoMap needs some luminance left for contours and
-# relief to read at all — but .62 sat far too close to the undimmed original.
-# The contrast and saturation nudges hold the woodland greens and contour
-# browns apart once the brightness comes down.
-_TINT = "brightness(.42) contrast(1.12) saturate(.78)"
 
 
 _BODY = Template("""<!-- $credits
@@ -133,14 +117,13 @@ _BODY = Template("""<!-- $credits
   // The provider is chosen server-side, but light-versus-dark cannot be: with
   // ?theme=auto nothing is stamped and only the browser knows. So the server
   // hands over both URLs and this picks. A provider with no dark cartography
-  // supplies only `url` and opts into the `tinted` class instead.
+  // supplies only `url`, and its tiles are used as drawn.
   var base = $basemap;
   L.tileLayer(dark && base.urlDark ? base.urlDark : base.url, {
     // Above a provider's ceiling Leaflet upscales the last real tile rather
     // than requesting ones that do not exist.
     maxZoom: 20, maxNativeZoom: base.maxNativeZoom,
     subdomains: base.subdomains,
-    className: base.tinted ? 'tinted' : '',
     attribution: base.attribution
   }).addTo(map);
 
@@ -291,9 +274,10 @@ def render_map_page(
     ``basemap`` picks the tile provider: ``"street"`` is CARTO, following the
     viewer's light/dark setting as the rest of the page does; ``"topo"`` is
     OpenTopoMap, which draws contours and shaded relief and bakes its own
-    streets into the tile. It has no dark cartography, so under a dark theme it
-    is dimmed rather than swapped. An unknown value raises ``KeyError`` — the
-    router constrains it to the known set before it gets here.
+    streets into the tile. It has only the one cartography, so ``theme`` moves
+    the page chrome around it but leaves the tiles alone. An unknown value
+    raises ``KeyError`` — the router constrains it to the known set before it
+    gets here.
     """
     # `<` only ever appears inside JSON strings, so escaping it keeps the
     # document valid while making it impossible for a workout name to close
@@ -303,7 +287,7 @@ def render_map_page(
     base = _BASEMAPS[basemap]
     return render_page(
         head=_HEAD,
-        style=_STYLE.substitute(gradient=gradient, tint=_TINT),
+        style=_STYLE.substitute(gradient=gradient),
         body=_BODY.substitute(
             data=data,
             ramp=json.dumps([list(c) for c in _RAMP]),
