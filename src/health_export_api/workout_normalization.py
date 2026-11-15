@@ -13,11 +13,14 @@ Key design decisions:
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
+
+log = logging.getLogger(__name__)
 
 # Workout type written by Hevy to HealthKit — excluded by default.
 HEVY_WORKOUT_TYPE = "Traditional Strength Training"
@@ -92,6 +95,36 @@ def _qty(field: Any, default: float = 0.0) -> float:
     return default
 
 
+# Miles per unit of a workout's ``distance``. Health Auto Export reports each
+# workout in its own unit rather than the export's: walks, rides and paddles
+# come in ``mi``, but an open water swim comes in ``yd``.
+_MILES_PER_UNIT = {
+    "mi": 1.0,
+    "yd": 1 / 1760,
+    "ft": 1 / 5280,
+    "m": 1 / 1609.344,
+    "km": 1 / 1.609344,
+}
+
+
+def _distance_mi(field: Any) -> float:
+    """A workout's distance in miles, converted from whatever unit it carries.
+
+    A bare number, or a quantity without a unit, is taken as miles, as every
+    workout was before units varied. An unknown unit gives 0: no distance
+    beats a wrong one, which would be summed into every total.
+    """
+    qty = _qty(field, 0.0)
+    unit = field.get("units") if isinstance(field, Mapping) else None
+    if unit is None:
+        return qty
+    factor = _MILES_PER_UNIT.get(str(unit).strip().lower())
+    if factor is None:
+        log.warning("Ignoring workout distance in unknown unit %r", unit)
+        return 0.0
+    return qty * factor
+
+
 def _iter_workouts(records: Iterable[Mapping[str, Any]]) -> Iterable[WorkoutSession]:
     """Yield WorkoutSession objects from all stored export records."""
     for record in records:
@@ -124,8 +157,7 @@ def _iter_workouts(records: Iterable[Mapping[str, Any]]) -> Iterable[WorkoutSess
             dur_sec = _qty(raw.get("duration"), 0.0)
             dur_min = dur_sec / 60.0
 
-            # Distance: units should be "mi" — trust the export config
-            dist_mi = _qty(raw.get("distance"), 0.0)
+            dist_mi = _distance_mi(raw.get("distance"))
 
             # Active energy
             ae = _qty(
