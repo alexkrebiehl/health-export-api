@@ -2,9 +2,11 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from health_export_api.app import create_app
+from health_export_api.workout_normalization import _distance_mi
 
 HEADERS = {"Authorization": "Bearer test-token"}
 
@@ -167,6 +169,41 @@ def test_workout_summary_all_types(tmp_path: Path) -> None:
     assert body["workout_type"] is None  # all types
     total_sessions = sum(s["sessions"] for s in body["series"])
     assert total_sessions == 2  # 2 walks, Hevy excluded
+
+
+def test_workout_distance_is_converted_from_its_own_unit(tmp_path: Path) -> None:
+    """A swim arrives in yards; it must not be summed as if it were miles."""
+    client = make_client(tmp_path)
+    client.post("/v1/exports", headers=HEADERS, json={
+        "data": {"workouts": [{
+            "id": "swim-1",
+            "name": "Open Water Swim",
+            "start": "2026-07-11 14:19:21 -0400",
+            "duration": {"qty": 1500, "units": "s"},
+            "distance": {"qty": 289.0460450287379, "units": "yd"},
+        }]}
+    })
+
+    resp = client.get(
+        "/v1/workouts/summary",
+        headers=HEADERS,
+        params={"workout_type": "Open Water Swim",
+                "start_date": "2026-07-11", "end_date": "2026-07-11"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["series"][0]["total_distance_mi"] == 0.16
+
+
+def test_distance_mi_conversions() -> None:
+    assert _distance_mi({"qty": 289.0460450287379, "units": "yd"}) == pytest.approx(0.16423, abs=1e-5)
+    assert _distance_mi({"qty": 1.609344, "units": "km"}) == pytest.approx(1.0)
+    assert _distance_mi({"qty": 1609.344, "units": " M "}) == pytest.approx(1.0)
+    assert _distance_mi({"qty": 2.5, "units": "mi"}) == 2.5
+    assert _distance_mi({"qty": 2.5}) == 2.5          # no unit: miles
+    assert _distance_mi(2.5) == 2.5                   # bare number: miles
+    assert _distance_mi({"qty": 40, "units": "laps"}) == 0.0
+    assert _distance_mi(None) == 0.0
 
 
 def test_workout_endpoints_require_auth(tmp_path: Path) -> None:
